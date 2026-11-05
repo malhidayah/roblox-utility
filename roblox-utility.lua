@@ -1020,14 +1020,17 @@ tabBar.Parent = main
 local tabDefs = {
     { key = "main",    label = "Main" },
     { key = "player",  label = "Player" },
+    { key = "world",   label = "World" },
     { key = "avatar",  label = "Avatar" },
     { key = "emote",   label = "Emote" },
     { key = "remotes", label = "Remote" },
 }
 
+local tabWidth = 1 / #tabDefs
+
 for i, t in ipairs(tabDefs) do
-    local b = smallBtn(tabBar, t.label, (i - 1) * 0.2, (i - 1) * 2, 0.2, -2)
-    b.TextSize = 11
+    local b = smallBtn(tabBar, t.label, (i - 1) * tabWidth, (i - 1) * 2, tabWidth, -2)
+    b.TextSize = 10
     b.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
     tabButtons[t.key] = b
     b.MouseButton1Click:Connect(function() selectTab(t.key) end)
@@ -1066,6 +1069,7 @@ statusLabel.Parent = main
 
 local pageMain = pages["main"]
 local pagePlayer = pages["player"]
+local pageWorld = pages["world"]
 local pageAvatar = pages["avatar"]
 local pageEmote = pages["emote"]
 local pageRemotes = pages["remotes"]
@@ -1337,6 +1341,255 @@ task.spawn(function()
         end
     end
 end)
+
+-- ---------------------------------------------------------------- world tab
+
+local itemEsp = false
+local clickGrab = false
+local itemBoxes = {}
+
+sectionLabel(pageWorld, "ITEM FINDER", 1)
+
+local worldFilter = Instance.new("TextBox")
+worldFilter.Size = UDim2.new(1, -4, 0, 28)
+worldFilter.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+worldFilter.PlaceholderText = "part name contains... e.g. Coin"
+worldFilter.Text = ""
+worldFilter.TextColor3 = Color3.fromRGB(220, 220, 226)
+worldFilter.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+worldFilter.Font = Enum.Font.Gotham
+worldFilter.TextSize = 12
+worldFilter.BorderSizePixel = 0
+worldFilter.ClearTextOnFocus = false
+worldFilter.LayoutOrder = 2
+worldFilter.Parent = pageWorld
+
+local wfCorner = Instance.new("UICorner")
+wfCorner.CornerRadius = UDim.new(0, 6)
+wfCorner.Parent = worldFilter
+
+local worldRow1 = Instance.new("Frame")
+worldRow1.Size = UDim2.new(1, -4, 0, 28)
+worldRow1.BackgroundTransparency = 1
+worldRow1.BorderSizePixel = 0
+worldRow1.LayoutOrder = 3
+worldRow1.Parent = pageWorld
+
+local espItemsBtn = smallBtn(worldRow1, "ESP: OFF", 0, 0, 0.5, -2)
+local grabBtn = smallBtn(worldRow1, "Grab: OFF", 0.5, 1, 0.5, -1)
+
+local worldRow2 = Instance.new("Frame")
+worldRow2.Size = UDim2.new(1, -4, 0, 28)
+worldRow2.BackgroundTransparency = 1
+worldRow2.BorderSizePixel = 0
+worldRow2.LayoutOrder = 4
+worldRow2.Parent = pageWorld
+
+local tpNearestBtn = smallBtn(worldRow2, "TP nearest", 0, 0, 0.5, -2)
+local pullBtn = smallBtn(worldRow2, "Pull all", 0.5, 1, 0.5, -1)
+
+local hint = Instance.new("TextLabel")
+hint.Size = UDim2.new(1, -4, 0, 96)
+hint.BackgroundColor3 = Color3.fromRGB(28, 28, 33)
+hint.BorderSizePixel = 0
+hint.Text = "  ESP marks every part matching the filter.\n  TP nearest jumps to the closest match.\n  Pull all moves up to 60 matches next to you.\n  Grab: tap a part on screen to pull it.\n\n  All of this runs on your client. The server\n  can snap anything it owns back to where it was."
+hint.TextColor3 = Color3.fromRGB(160, 160, 172)
+hint.Font = Enum.Font.Gotham
+hint.TextSize = 11
+hint.TextXAlignment = Enum.TextXAlignment.Left
+hint.TextYAlignment = Enum.TextYAlignment.Top
+hint.TextWrapped = true
+hint.LayoutOrder = 5
+hint.Parent = pageWorld
+
+local whCorner = Instance.new("UICorner")
+whCorner.CornerRadius = UDim.new(0, 6)
+whCorner.Parent = hint
+
+local function clearItemBoxes()
+    for part, box in pairs(itemBoxes) do
+        if box then pcall(function() box:Destroy() end) end
+        itemBoxes[part] = nil
+    end
+    itemBoxes = {}
+end
+
+local function matchingParts(q, limit)
+    local out = {}
+    if q == "" then return out end
+    local ownChar = LP.Character
+    for _, inst in ipairs(workspace:GetDescendants()) do
+        if inst:IsA("BasePart") and inst.Name:lower():find(q, 1, true) then
+            if not (ownChar and inst:IsDescendantOf(ownChar)) then
+                table.insert(out, inst)
+                if #out >= limit then break end
+            end
+        end
+    end
+    return out
+end
+
+local function sweepItemEsp()
+    if not itemEsp then return end
+    local q = worldFilter.Text:lower()
+    if q == "" then
+        clearItemBoxes()
+        return
+    end
+
+    local alive = {}
+    for _, part in ipairs(matchingParts(q, 200)) do
+        alive[part] = true
+        if not itemBoxes[part] then
+            local box = Instance.new("SelectionBox")
+            box.Adornee = part
+            box.LineThickness = 0.03
+            box.Color3 = Color3.fromRGB(120, 220, 150)
+            box.SurfaceTransparency = 1
+            box.Parent = part
+            itemBoxes[part] = box
+        end
+    end
+
+    for part, box in pairs(itemBoxes) do
+        if not alive[part] or not part.Parent then
+            pcall(function() box:Destroy() end)
+            itemBoxes[part] = nil
+        end
+    end
+end
+
+local function tpNearestItem()
+    local _, _, hrp = getChar()
+    if not hrp then
+        notify("Character not loaded")
+        return
+    end
+    local list = matchingParts(worldFilter.Text:lower(), 400)
+    if #list == 0 then
+        notify("No part matches the filter")
+        setStatus("world: no match for " .. worldFilter.Text)
+        return
+    end
+
+    local best, bestDist
+    for _, part in ipairs(list) do
+        local d = (part.Position - hrp.Position).Magnitude
+        if not bestDist or d < bestDist then
+            best, bestDist = part, d
+        end
+    end
+
+    hrp.CFrame = best.CFrame + Vector3.new(0, 4, 0)
+    setStatus(("tp to %s (%.0f studs)"):format(best.Name, bestDist))
+end
+
+local function pullAllItems()
+    local _, _, hrp = getChar()
+    if not hrp then
+        notify("Character not loaded")
+        return
+    end
+    local list = matchingParts(worldFilter.Text:lower(), 60)
+    if #list == 0 then
+        notify("No part matches the filter")
+        setStatus("world: no match for " .. worldFilter.Text)
+        return
+    end
+
+    local n = 0
+    for _, part in ipairs(list) do
+        local offset = Vector3.new(math.random(-5, 5), 3 + math.random(0, 3), math.random(-5, 5))
+        if pcall(function() part.CFrame = hrp.CFrame + offset end) then
+            n += 1
+        end
+    end
+    setStatus(("pulled %d parts - server may snap them back"):format(n))
+end
+
+local function grabFromScreen(x, y)
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+
+    local params = RaycastParams.new()
+    local okEnum = pcall(function()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+    end)
+    if not okEnum then
+        pcall(function() params.FilterType = Enum.RaycastFilterType.Blacklist end)
+    end
+    params.FilterDescendantsInstances = { LP.Character }
+
+    local ray = cam:ViewportPointToRay(x, y)
+    local hit = workspace:Raycast(ray.Origin, ray.Direction * 3000, params)
+    if not hit or not hit.Instance then return end
+
+    local part = hit.Instance
+    local q = worldFilter.Text:lower()
+    if q ~= "" and not part.Name:lower():find(q, 1, true) then
+        setStatus("grab skipped: " .. part.Name)
+        return
+    end
+
+    local _, _, hrp = getChar()
+    if not hrp then return end
+
+    part.CFrame = hrp.CFrame + Vector3.new(0, 4, 0)
+    setStatus("grabbed " .. part.Name)
+end
+
+local function styleWorldBtns()
+    espItemsBtn.Text = itemEsp and "ESP: ON" or "ESP: OFF"
+    espItemsBtn.BackgroundColor3 = itemEsp and Color3.fromRGB(48, 110, 70) or Color3.fromRGB(34, 34, 40)
+    espItemsBtn.TextColor3 = itemEsp and Color3.fromRGB(200, 255, 210) or Color3.fromRGB(210, 210, 218)
+
+    grabBtn.Text = clickGrab and "Grab: ON" or "Grab: OFF"
+    grabBtn.BackgroundColor3 = clickGrab and Color3.fromRGB(48, 110, 70) or Color3.fromRGB(34, 34, 40)
+    grabBtn.TextColor3 = clickGrab and Color3.fromRGB(200, 255, 210) or Color3.fromRGB(210, 210, 218)
+end
+
+espItemsBtn.MouseButton1Click:Connect(function()
+    itemEsp = not itemEsp
+    if not itemEsp then clearItemBoxes() end
+    styleWorldBtns()
+    sweepItemEsp()
+    setStatus("item ESP " .. (itemEsp and "on" or "off"))
+end)
+
+grabBtn.MouseButton1Click:Connect(function()
+    clickGrab = not clickGrab
+    styleWorldBtns()
+    setStatus("click grab " .. (clickGrab and "on - tap a part" or "off"))
+end)
+
+tpNearestBtn.MouseButton1Click:Connect(tpNearestItem)
+pullBtn.MouseButton1Click:Connect(pullAllItems)
+
+worldFilter:GetPropertyChangedSignal("Text"):Connect(function()
+    if itemEsp then
+        clearItemBoxes()
+        sweepItemEsp()
+    end
+end)
+
+UIS.InputBegan:Connect(function(input, gp)
+    if gp or not clickGrab then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        grabFromScreen(input.Position.X, input.Position.Y)
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if itemEsp and main.Visible and activeTab == "world" then
+            sweepItemEsp()
+        end
+    end
+end)
+
+styleWorldBtns()
 
 -- ---------------------------------------------------------------- avatar tab
 
