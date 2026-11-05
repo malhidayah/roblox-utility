@@ -1,5 +1,5 @@
 --[[
-    Universal Client Utility â€” clean rebuild of the one-liner loader pattern
+    Universal Client Utility - clean rebuild of the one-liner loader pattern
     ------------------------------------------------------------------------
     Executor required. Two ways to run:
 
@@ -16,8 +16,24 @@
         camera, or client-side rendering.
 ]]
 
-if not (getgenv and loadstring) then
-    return warn("[Utility] Executor required (getgenv/loadstring missing).")
+-- Executors differ: some lack getgenv, a few lack loadstring. Neither is
+-- required for the UI, so degrade instead of aborting the whole script.
+local function trace(msg)
+    pcall(function() print("[Utility] " .. msg) end)
+end
+
+trace("start")
+
+local function sharedEnv()
+    if type(getgenv) == "function" then
+        local ok, g = pcall(getgenv)
+        if ok and type(g) == "table" then return g end
+    end
+    if type(getrenv) == "function" then
+        local ok, g = pcall(getrenv)
+        if ok and type(g) == "table" then return g end
+    end
+    return _G
 end
 
 local Players     = game:GetService("Players")
@@ -27,7 +43,7 @@ local VirtualUser = game:GetService("VirtualUser")
 local StarterGui  = game:GetService("StarterGui")
 
 local LP   = Players.LocalPlayer
-local genv = getgenv()
+local genv = sharedEnv()
 
 local flySpeed = 55
 local walkSpeedValue = 16
@@ -3010,3 +3026,5 @@ genv.Util = {
     spyDiag = spyDiagText,
     scanRemotes = collectRemotes,
 }
+
+trace("ready")
