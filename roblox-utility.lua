@@ -1572,13 +1572,13 @@ local rlLayout = Instance.new("UIListLayout")
 rlLayout.Padding = UDim.new(0, 2)
 rlLayout.Parent = remoteList
 
-sectionLabel(pageRemotes, "SPY (what the game fires)", 5)
+sectionLabel(pageRemotes, "SPY (what the game fires)", 9)
 
 local spyRow = Instance.new("Frame")
 spyRow.Size = UDim2.new(1, -4, 0, 28)
 spyRow.BackgroundTransparency = 1
 spyRow.BorderSizePixel = 0
-spyRow.LayoutOrder = 6
+spyRow.LayoutOrder = 10
 spyRow.Parent = pageRemotes
 
 local spyBtn = smallBtn(spyRow, "Spy: OFF", 0, 0, 0.62, -2)
@@ -1592,7 +1592,7 @@ spyLogFrame.BorderSizePixel = 0
 spyLogFrame.ScrollBarThickness = 3
 spyLogFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
 spyLogFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-spyLogFrame.LayoutOrder = 7
+spyLogFrame.LayoutOrder = 11
 spyLogFrame.Parent = pageRemotes
 
 local slCorner = Instance.new("UICorner")
@@ -1656,6 +1656,9 @@ local function collectRemotes()
     return #remoteCache
 end
 
+local selectedRemote
+local selectedLabel
+
 local function addRemoteRow(text, color, onClick)
     local b = Instance.new("TextButton")
     b.Size = UDim2.new(1, -6, 0, 24)
@@ -1706,12 +1709,12 @@ renderRemotes = function()
             if shown < 250 then
                 shown += 1
                 addRemoteRow(path, Color3.fromRGB(200, 210, 225), function()
-                    if setclipboard then
-                        setclipboard(path)
-                        setStatus("copied: " .. path)
-                    else
-                        setStatus("path: " .. path)
+                    selectedRemote = inst
+                    if selectedLabel then
+                        selectedLabel.Text = "selected: " .. inst.Name
                     end
+                    if setclipboard then setclipboard(path) end
+                    setStatus("selected " .. path .. " - args in the box below")
                 end)
             end
         end
@@ -1730,6 +1733,107 @@ scanBtn.MouseButton1Click:Connect(function()
     local n = collectRemotes()
     renderRemotes()
     setStatus(("remote scan: %d found"):format(n))
+end)
+
+sectionLabel(pageRemotes, "FIRE (selected remote)", 5)
+
+selectedLabel = Instance.new("TextLabel")
+selectedLabel.Size = UDim2.new(1, -4, 0, 18)
+selectedLabel.BackgroundTransparency = 1
+selectedLabel.Text = "selected: none"
+selectedLabel.TextColor3 = Color3.fromRGB(150, 150, 160)
+selectedLabel.Font = Enum.Font.Gotham
+selectedLabel.TextSize = 11
+selectedLabel.TextXAlignment = Enum.TextXAlignment.Left
+selectedLabel.TextTruncate = Enum.TextTruncate.AtEnd
+selectedLabel.LayoutOrder = 6
+selectedLabel.Parent = pageRemotes
+
+local argsBox = Instance.new("TextBox")
+argsBox.Size = UDim2.new(1, -4, 0, 28)
+argsBox.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+argsBox.PlaceholderText = 'args: "text", 5, true'
+argsBox.Text = ""
+argsBox.TextColor3 = Color3.fromRGB(220, 220, 226)
+argsBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+argsBox.Font = Enum.Font.Code
+argsBox.TextSize = 11
+argsBox.BorderSizePixel = 0
+argsBox.ClearTextOnFocus = false
+argsBox.LayoutOrder = 7
+argsBox.Parent = pageRemotes
+
+local abCorner = Instance.new("UICorner")
+abCorner.CornerRadius = UDim.new(0, 6)
+abCorner.Parent = argsBox
+
+local fireRow = Instance.new("Frame")
+fireRow.Size = UDim2.new(1, -4, 0, 28)
+fireRow.BackgroundTransparency = 1
+fireRow.BorderSizePixel = 0
+fireRow.LayoutOrder = 8
+fireRow.Parent = pageRemotes
+
+local fireBtn = smallBtn(fireRow, "Fire selected", 0, 0, 0.62, -2)
+fireBtn.BackgroundColor3 = Color3.fromRGB(74, 44, 44)
+local copyPathBtn = smallBtn(fireRow, "Copy path", 0.62, 1, 0.38, -1)
+
+-- Args are Lua literals:  "hello", 5, true, workspace.Baseplate
+local function parseArgs(text)
+    text = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if text == "" then return {} end
+    if type(loadstring) ~= "function" then return nil, "loadstring missing" end
+    local okChunk, chunk = pcall(loadstring, "return {" .. text .. "}")
+    if not okChunk or type(chunk) ~= "function" then return nil, "bad syntax" end
+    local okRun, res = pcall(chunk)
+    if not okRun or type(res) ~= "table" then return nil, "bad args" end
+    return res
+end
+
+local function argCount(t)
+    local n = 0
+    for _ in pairs(t) do n += 1 end
+    return n
+end
+
+fireBtn.MouseButton1Click:Connect(function()
+    if not selectedRemote or not selectedRemote.Parent then
+        notify("Select a remote in the list first")
+        setStatus("fire: no remote selected")
+        return
+    end
+
+    local args, err = parseArgs(argsBox.Text)
+    if not args then
+        notify("Args: " .. tostring(err))
+        setStatus("fire: " .. tostring(err))
+        return
+    end
+
+    local target = selectedRemote
+    local ok, res = pcall(function()
+        if target:IsA("RemoteFunction") then
+            return target:InvokeServer(table.unpack(args))
+        end
+        target:FireServer(table.unpack(args))
+    end)
+
+    if ok then
+        setStatus(("fired %s (%d args)"):format(target.Name, argCount(args)))
+    else
+        notify("Fire failed: " .. tostring(res))
+        setStatus("fire failed: " .. tostring(res))
+    end
+end)
+
+copyPathBtn.MouseButton1Click:Connect(function()
+    if not selectedRemote then
+        notify("Select a remote first")
+        return
+    end
+    local path = safePath(selectedRemote)
+    if setclipboard then setclipboard(path) end
+    setStatus("path: " .. path)
 end)
 
 -- ---------------------------------------------------------------- spy
@@ -1803,47 +1907,135 @@ end
 
 local spyHook
 
-local function installSpy()
-    if spyHook then return true end
+-- Executors differ a lot here: Delta has hookmetamethod, some have only
+-- getrawmetatable, some expose neither. Try every route, then say what was missing.
+local function spyPrimitives()
+    return {
+        hookmetamethod    = type(hookmetamethod) == "function",
+        getrawmetatable   = type(getrawmetatable) == "function",
+        debugmetatable    = type(debug) == "table" and type(debug.getmetatable) == "function",
+        setreadonly       = type(setreadonly) == "function",
+        getnamecallmethod = type(getnamecallmethod) == "function",
+        newcclosure       = type(newcclosure) == "function",
+    }
+end
 
-    local okMT, mt = pcall(getrawmetatable, game)
-    if not okMT or type(mt) ~= "table" then
-        return false, "getrawmetatable unavailable"
+local function spyDiagText()
+    local p = spyPrimitives()
+    local out = {}
+    for _, k in ipairs({ "hookmetamethod", "getrawmetatable", "debugmetatable", "setreadonly", "getnamecallmethod", "newcclosure" }) do
+        table.insert(out, k .. "=" .. (p[k] and "yes" or "no"))
+    end
+    return table.concat(out, " ")
+end
+
+-- Runs inside pcall from the hook: nothing here may ever throw into the game.
+local function spyLogCall(self, args)
+    local method
+    local okM, m = pcall(getnamecallmethod)
+    if okM and type(m) == "string" then
+        method = m
     end
 
-    local prev = mt.__namecall
-    if type(prev) ~= "function" then
-        return false, "no __namecall on game metatable"
+    -- No getnamecallmethod: infer from the receiver. Any namecall on a remote
+    -- whose first argument is not a function is an outgoing call.
+    if not method then
+        if typeof(self) == "Instance" and REMOTE_CLASSES[self.ClassName] and type(args[1]) ~= "function" then
+            method = (self.ClassName == "RemoteFunction") and "InvokeServer" or "FireServer"
+        end
     end
 
+    if method ~= "FireServer" and method ~= "InvokeServer" then
+        return
+    end
+
+    local okP, path = pcall(safePath, self)
+    local parts = {}
+    for i = 1, math.min(args.n, 4) do
+        table.insert(parts, describeArg(args[i]))
+    end
+    if args.n > 4 then
+        table.insert(parts, ("+%d"):format(args.n - 4))
+    end
+
+    addSpyLine(("%s %s(%s)"):format(method, okP and path or "?", table.concat(parts, ", ")))
+end
+
+local function buildSpyHook(callOriginal)
     local wrapper = function(self, ...)
         if spyEnabled then
-            local okM, method = pcall(getnamecallmethod)
-            if okM and (method == "FireServer" or method == "InvokeServer") then
-                local okP, path = pcall(safePath, self)
-                local args = table.pack(...)
-                local parts = {}
-                for i = 1, math.min(args.n, 4) do
-                    table.insert(parts, describeArg(args[i]))
-                end
-                if args.n > 4 then
-                    table.insert(parts, ("+%d"):format(args.n - 4))
-                end
-                addSpyLine(("%s %s(%s)"):format(method, okP and path or "?", table.concat(parts, ", ")))
-            end
+            pcall(spyLogCall, self, table.pack(...))
         end
-        return prev(self, ...)
+        return callOriginal(self, ...)
     end
 
-    if newcclosure then
-        wrapper = newcclosure(wrapper)
+    if type(newcclosure) == "function" then
+        local ok, c = pcall(newcclosure, wrapper)
+        if ok and type(c) == "function" then wrapper = c end
     end
 
-    pcall(setreadonly, mt, false)
-    mt.__namecall = wrapper
-    pcall(setreadonly, mt, true)
+    return wrapper
+end
 
-    spyHook = { mt = mt, prev = prev }
+local function installSpy()
+    if spyHook then return true end
+    local tried = {}
+
+    -- Route 1: hookmetamethod works even on a locked metatable.
+    if type(hookmetamethod) == "function" then
+        local original
+        local wrapper = buildSpyHook(function(self, ...)
+            if original then return original(self, ...) end
+        end)
+        local ok, old = pcall(hookmetamethod, game, "__namecall", wrapper)
+        if ok and type(old) == "function" then
+            original = old
+            spyHook = { kind = "hookmetamethod" }
+            return true
+        end
+        table.insert(tried, "hookmetamethod:failed")
+    else
+        table.insert(tried, "hookmetamethod:missing")
+    end
+
+    -- Route 2: swap __namecall on the metatable itself.
+    local mt
+    if type(getrawmetatable) == "function" then
+        local ok, m = pcall(getrawmetatable, game)
+        if ok and type(m) == "table" then mt = m end
+    end
+    if not mt and type(debug) == "table" and type(debug.getmetatable) == "function" then
+        local ok, m = pcall(debug.getmetatable, game)
+        if ok and type(m) == "table" then mt = m end
+    end
+
+    if not mt then
+        table.insert(tried, "metatable:unreachable")
+        return false, table.concat(tried, " ") .. " | " .. spyDiagText()
+    end
+
+    local prev = rawget(mt, "__namecall")
+    if type(prev) ~= "function" then
+        table.insert(tried, "namecall:missing")
+        return false, table.concat(tried, " ") .. " | " .. spyDiagText()
+    end
+
+    -- Write through even without setreadonly: the table is sometimes writable.
+    local wrapper = buildSpyHook(function(self, ...) return prev(self, ...) end)
+    if type(setreadonly) == "function" then
+        pcall(setreadonly, mt, false)
+    end
+    local okSet = pcall(rawset, mt, "__namecall", wrapper)
+    if type(setreadonly) == "function" then
+        pcall(setreadonly, mt, true)
+    end
+
+    if not okSet or rawget(mt, "__namecall") ~= wrapper then
+        table.insert(tried, "metatable:readonly")
+        return false, table.concat(tried, " ") .. " | " .. spyDiagText()
+    end
+
+    spyHook = { kind = "metatable", mt = mt, prev = prev }
     return true
 end
 
@@ -1863,8 +2055,10 @@ spyBtn.MouseButton1Click:Connect(function()
     if not spyEnabled then
         local ok, err = installSpy()
         if not ok then
-            notify("Spy: " .. tostring(err))
-            setStatus("spy unavailable: " .. tostring(err))
+            local msg = tostring(err)
+            notify("Spy unavailable - see console")
+            setStatus("spy unavailable: " .. msg)
+            print("[Utility] spy diag: " .. msg)
             return
         end
         spyEnabled = true
@@ -1956,4 +2150,6 @@ notify("Loaded - RightShift to toggle")
 genv.Util = {
     state = state,
     setFeature = setFeature,
+    spyDiag = spyDiagText,
+    scanRemotes = collectRemotes,
 }
