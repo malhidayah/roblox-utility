@@ -1901,7 +1901,7 @@ local function buildUI()
     hint.AutomaticSize = Enum.AutomaticSize.Y
     hint.BackgroundColor3 = C.panel
     hint.BorderSizePixel = 0
-    hint.Text = "Scan lists the part names this map uses, so you can filter for them. ESP, TP and Pull only move things on your client; the server can snap back anything it owns. Prompts and tools below go through the game itself. Take presses the map's own pickup, then checks your Backpack and equips whatever the server actually handed over."
+    hint.Text = "Scan lists the part names this map uses, so you can filter for them. ESP, TP and Pull only move things on your client; the server can snap back anything it owns. Prompts and tools below go through the game itself. Take presses the map's own pickup, then checks your Backpack and equips whatever the server actually handed over. Coins and points go to the game's HUD, not the Backpack."
     hint.TextColor3 = C.muted
     hint.Font = Enum.Font.Gotham
     hint.TextSize = 10
@@ -2479,7 +2479,7 @@ local function buildUI()
                 equipTool(tool)
                 return true
             end
-            setStatus(("%s: no item in backpack - map hands it out another way"):format(label))
+            setStatus(("%s: fired, no new tool in backpack"):format(label))
             return false
         end
 
