@@ -46,7 +46,7 @@ Every pickup reports what actually happened:
 
 ```
 Sword -> backpack: Sword        the server gave it to you, now equipped
-Coin - Pick up: no item in backpack - map hands it out another way
+Coin - Pick up: fired, no new tool in backpack
 ```
 
 There is deliberately no local clone. A tool copied into your Backpack by the client exists only on your machine: the server does not know it is yours, it cannot be equipped properly, its server Scripts never run, and it disappears on respawn. A local copy would look like it worked and do nothing.
