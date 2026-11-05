@@ -1549,6 +1549,54 @@ local function buildUI()
         end)
     end)
 
+    -- Executor helpers are not standard Luau, so report what this build
+    -- actually has. A missing helper then reads as a known limit, not a bug.
+    sectionLabel(pageMain, "EXECUTOR", 70)
+
+    local capLabel = Instance.new("TextLabel")
+    capLabel.Size = UDim2.new(1, -4, 0, 0)
+    capLabel.AutomaticSize = Enum.AutomaticSize.Y
+    capLabel.BackgroundColor3 = C.panel
+    capLabel.BorderSizePixel = 0
+    capLabel.Text = ""
+    capLabel.TextColor3 = C.muted
+    capLabel.Font = Enum.Font.Code
+    capLabel.TextSize = 9
+    capLabel.TextXAlignment = Enum.TextXAlignment.Left
+    capLabel.TextWrapped = true
+    capLabel.LayoutOrder = 71
+    capLabel.Parent = pageMain
+
+    local capCorner = Instance.new("UICorner")
+    capCorner.CornerRadius = UDim.new(0, 7)
+    capCorner.Parent = capLabel
+
+    local capPad = Instance.new("UIPadding")
+    capPad.PaddingTop = UDim.new(0, 8)
+    capPad.PaddingBottom = UDim.new(0, 8)
+    capPad.PaddingLeft = UDim.new(0, 10)
+    capPad.PaddingRight = UDim.new(0, 10)
+    capPad.Parent = capLabel
+
+    do
+        local function has(name, value)
+            return (value ~= nil) and "yes" or "no"
+        end
+
+        local lines = {
+            ("prompt %s   click %s   touch %s"):format(
+                has("fireproximityprompt", fireproximityprompt),
+                has("fireclickdetector", fireclickdetector),
+                has("firetouchinterest", firetouchinterest)
+            ),
+            ("hook %s   clipboard %s"):format(
+                has("hookfunction", hookfunction),
+                has("setclipboard", setclipboard)
+            ),
+        }
+        capLabel.Text = table.concat(lines, "\n")
+    end
+
     local function refreshNetLabel()
         netLabel.Text = netReport()
     end
@@ -2328,11 +2376,18 @@ local function buildUI()
             return b
         end
 
-        local function distanceTo(part)
+        -- The prompt sits on a part, but a ClickDetector often sits on a Model,
+        -- which has no Position of its own. Fall back to its pivot.
+        local function distanceTo(obj)
             local _, _, hrp = getChar()
-            if not hrp or not part then return math.huge end
-            local ok, d = pcall(function() return (part.Position - hrp.Position).Magnitude end)
+            if not hrp or not obj then return math.huge end
+
+            local ok, d = pcall(function() return (obj.Position - hrp.Position).Magnitude end)
             if ok and d then return d end
+
+            local pOk, pivot = pcall(function() return obj:GetPivot().Position end)
+            if pOk and pivot then return (pivot - hrp.Position).Magnitude end
+
             return math.huge
         end
 
@@ -2394,6 +2449,18 @@ local function buildUI()
                 return ok
             end
 
+            -- fireproximityprompt is the executor-side shortcut: it calls the
+            -- prompt's own trigger on the server without walking over or
+            -- holding the key. Every mainstream executor ships it.
+            if type(fireproximityprompt) == "function" then
+                local ok = pcall(fireproximityprompt, prompt)
+                if ok then
+                    setStatus("prompt fired: " .. promptLabel(prompt))
+                    return true
+                end
+            end
+
+            -- Fallback for executors without the helper: simulate the key hold.
             local ok, err = pcall(function()
                 prompt:InputHoldBegin()
                 task.wait(math.min(tonumber(prompt.HoldDuration) or 0, 0.8))
@@ -2483,20 +2550,6 @@ local function buildUI()
         tlLayout.Padding = UDim.new(0, 2)
         tlLayout.Parent = toolList
 
-        local function collectTools(limit)
-            local out = {}
-            for _, inst in ipairs(workspaceDescendants()) do
-                if inst:IsA("Tool") then
-                    table.insert(out, inst)
-                    if #out >= (limit or 80) then break end
-                end
-            end
-            table.sort(out, function(a, b)
-                return distanceTo(a.Parent) < distanceTo(b.Parent)
-            end)
-            return out
-        end
-
         -- A Tool is not a Model, so it has no Position/GetPivot of its own.
         -- Resolve the part that actually sits in the world.
         local function toolPart(tool)
@@ -2531,6 +2584,20 @@ local function buildUI()
             return (pos - hrp.Position).Magnitude
         end
 
+        local function collectTools(limit)
+            local out = {}
+            for _, inst in ipairs(workspaceDescendants()) do
+                if inst:IsA("Tool") then
+                    table.insert(out, inst)
+                    if #out >= (limit or 80) then break end
+                end
+            end
+            table.sort(out, function(a, b)
+                return distanceToTool(a) < distanceToTool(b)
+            end)
+            return out
+        end
+
         local function tpToTool(tool)
             local _, _, hrp = getChar()
             if not hrp then
@@ -2555,6 +2622,31 @@ local function buildUI()
             end
         end
 
+        -- Some maps hand the tool over from a Touched handler rather than a
+        -- prompt. firetouchinterest is the executor helper that fires that
+        -- handler without moving the character.
+        local function touchTool(tool)
+            local _, _, hrp = getChar()
+            local part = toolPart(tool)
+            if not hrp or not part then
+                notify("Tool has no part to touch")
+                return false
+            end
+            if type(firetouchinterest) ~= "function" then
+                setStatus("this executor has no firetouchinterest")
+                return false
+            end
+
+            local ok = pcall(function()
+                firetouchinterest(hrp, part, 0)
+                task.wait()
+                firetouchinterest(hrp, part, 1)
+            end)
+
+            setStatus((ok and "touched " or "touch failed ") .. tostring(tool.Name))
+            return ok
+        end
+
         local function renderTools()
             clearList(toolList)
             local list = collectTools()
@@ -2567,8 +2659,20 @@ local function buildUI()
             for i, tool in ipairs(list) do
                 local d = distanceToTool(tool)
                 local text = (d < math.huge) and ("%s  (%.0f)"):format(tool.Name, d) or tool.Name
-                local row = listRow(toolList, text, i)
-                row.MouseButton1Click:Connect(function() tpToTool(tool) end)
+
+                local row = Instance.new("Frame")
+                row.Size = UDim2.new(1, -8, 0, 24)
+                row.BackgroundTransparency = 1
+                row.LayoutOrder = i
+                row.Parent = toolList
+
+                local nameBtn = listRow(row, text, i)
+                nameBtn.Size = UDim2.new(1, -58, 1, 0)
+                nameBtn.Position = UDim2.fromOffset(0, 0)
+                nameBtn.MouseButton1Click:Connect(function() tpToTool(tool) end)
+
+                local touchBtn = smallBtn(row, "Touch", 1, -54, 0, 54)
+                touchBtn.MouseButton1Click:Connect(function() touchTool(tool) end)
             end
 
             return #list
