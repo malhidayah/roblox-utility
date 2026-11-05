@@ -1901,7 +1901,7 @@ local function buildUI()
     hint.AutomaticSize = Enum.AutomaticSize.Y
     hint.BackgroundColor3 = C.panel
     hint.BorderSizePixel = 0
-    hint.Text = "Scan lists the part names this map uses, so you can filter for them. ESP, TP and Pull only move things on your client; the server can snap back anything it owns. Prompts and tools below go through the game itself."
+    hint.Text = "Scan lists the part names this map uses, so you can filter for them. ESP, TP and Pull only move things on your client; the server can snap back anything it owns. Prompts and tools below go through the game itself. Take presses the map's own pickup, then checks your Backpack and equips whatever the server actually handed over."
     hint.TextColor3 = C.muted
     hint.Font = Enum.Font.Gotham
     hint.TextSize = 10
@@ -2430,6 +2430,59 @@ local function buildUI()
             return tostring(label)
         end
 
+        -- ---------------------------------------------------- backpack check
+
+        -- A tool only exists for real once the server puts it in your Backpack.
+        -- Everything below watches that container, so a pickup that the map
+        -- refused is reported as refused instead of faked locally.
+        local function backpackTools()
+            local found = {}
+            local function scan(container)
+                if not container then return end
+                for _, c in ipairs(container:GetChildren()) do
+                    local isTool = false
+                    pcall(function() isTool = c:IsA("Tool") end)
+                    if isTool then found[c.Name] = c end
+                end
+            end
+            scan(LP:FindFirstChildOfClass("Backpack"))
+            scan(LP.Character)
+            return found
+        end
+
+        local function equipTool(tool)
+            local char = LP.Character
+            if not char or not tool or not tool.Parent then return end
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if not hum then return end
+            pcall(function() hum:EquipTool(tool) end)
+        end
+
+        -- The server needs a moment to replicate the new tool, and a map may
+        -- hand it over a few hundred milliseconds later. Poll instead of
+        -- checking once.
+        local function waitForGain(before, tries)
+            for _ = 1, (tries or 8) do
+                task.wait(0.2)
+                local now = backpackTools()
+                for name, tool in pairs(now) do
+                    if not before[name] then return name, tool end
+                end
+            end
+            return nil
+        end
+
+        local function reportGain(before, label)
+            local name, tool = waitForGain(before)
+            if name then
+                setStatus(("%s -> backpack: %s"):format(label, name))
+                equipTool(tool)
+                return true
+            end
+            setStatus(("%s: no item in backpack - map hands it out another way"):format(label))
+            return false
+        end
+
         local function firePrompt(prompt)
             if not prompt or not prompt.Parent then
                 notify("Prompt is gone")
@@ -2498,7 +2551,12 @@ local function buildUI()
                 local text = (d < math.huge) and ("%s  (%.0f)"):format(name, d) or name
 
                 local row = listRow(promptList, text, i)
-                row.MouseButton1Click:Connect(function() firePrompt(prompt) end)
+                row.MouseButton1Click:Connect(function()
+                    local before = backpackTools()
+                    if firePrompt(prompt) then
+                        task.spawn(function() reportGain(before, name) end)
+                    end
+                end)
             end
 
             return #list
@@ -2515,7 +2573,11 @@ local function buildUI()
                 notify("No prompt in this map")
                 return
             end
-            firePrompt(list[1])
+            local before = backpackTools()
+            local label = promptLabel(list[1])
+            if firePrompt(list[1]) then
+                task.spawn(function() reportGain(before, label) end)
+            end
         end)
 
         placeHolder(promptList, "press Scan prompts")
@@ -2586,8 +2648,9 @@ local function buildUI()
 
         local function collectTools(limit)
             local out = {}
+            local char = LP.Character
             for _, inst in ipairs(workspaceDescendants()) do
-                if inst:IsA("Tool") then
+                if inst:IsA("Tool") and not (char and inst:IsDescendantOf(char)) then
                     table.insert(out, inst)
                     if #out >= (limit or 80) then break end
                 end
@@ -2647,6 +2710,74 @@ local function buildUI()
             return ok
         end
 
+        -- The whole point of the section: get the tool into the player's own
+        -- Backpack so it can be equipped and used. That only happens when the
+        -- server does it, so this presses whatever the map uses and then checks
+        -- the Backpack instead of cloning the tool locally.
+        local function takeTool(tool)
+            if not tool or not tool.Parent then
+                notify("Tool is gone")
+                return false
+            end
+
+            local char = LP.Character
+            if char and tool:IsDescendantOf(char) then
+                equipTool(tool)
+                setStatus(tostring(tool.Name) .. " is already yours")
+                return true
+            end
+
+            local bp = LP:FindFirstChildOfClass("Backpack")
+            if bp and tool:IsDescendantOf(bp) then
+                equipTool(tool)
+                setStatus(tostring(tool.Name) .. " is already in your backpack")
+                return true
+            end
+
+            local before = backpackTools()
+            local label = tostring(tool.Name)
+            local fired = false
+
+            -- The pickup prompt usually sits on the tool or on the model that
+            -- holds it (a rack, a shelf, a display stand).
+            local roots = { tool }
+            local holder = tool.Parent
+            if holder and holder ~= workspace and not holder:IsA("Folder") then
+                table.insert(roots, holder)
+            end
+
+            local candidates = {}
+            for _, root in ipairs(roots) do
+                for _, d in ipairs(root:GetDescendants()) do
+                    local isPrompt, isClick = false, false
+                    pcall(function()
+                        isPrompt = d:IsA("ProximityPrompt")
+                        isClick = d:IsA("ClickDetector")
+                    end)
+                    if (isPrompt or isClick) and d.Parent then
+                        local enabled = true
+                        pcall(function() enabled = d.Enabled end)
+                        if enabled then table.insert(candidates, d) end
+                    end
+                end
+            end
+
+            -- A rack can hold one prompt per item. Fire only the one attached to
+            -- this tool, never the whole shelf.
+            if #candidates > 0 then
+                local chosen = candidates[1]
+                for _, c in ipairs(candidates) do
+                    if c:IsDescendantOf(tool) then chosen = c break end
+                end
+                fired = firePrompt(chosen)
+            end
+
+            -- No prompt: the map probably grants it from a Touched handler.
+            if not fired then touchTool(tool) end
+
+            return reportGain(before, label)
+        end
+
         local function renderTools()
             clearList(toolList)
             local list = collectTools()
@@ -2667,11 +2798,19 @@ local function buildUI()
                 row.Parent = toolList
 
                 local nameBtn = listRow(row, text, i)
-                nameBtn.Size = UDim2.new(1, -58, 1, 0)
+                nameBtn.Size = UDim2.new(1, -84, 1, 0)
                 nameBtn.Position = UDim2.fromOffset(0, 0)
                 nameBtn.MouseButton1Click:Connect(function() tpToTool(tool) end)
 
-                local touchBtn = smallBtn(row, "Touch", 1, -54, 0, 54)
+                local takeBtn = smallBtn(row, "Take", 1, -80, 0, 38)
+                takeBtn.TextSize = 10
+                takeBtn.MouseButton1Click:Connect(function()
+                    local ok, err = pcall(takeTool, tool)
+                    if not ok then setStatus("take failed: " .. tostring(err)) end
+                end)
+
+                local touchBtn = smallBtn(row, "Touch", 1, -40, 0, 38)
+                touchBtn.TextSize = 10
                 touchBtn.MouseButton1Click:Connect(function() touchTool(tool) end)
             end
 

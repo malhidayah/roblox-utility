@@ -36,10 +36,24 @@ If the game enables Server Authority, the server owns physics and client movemen
 
 The World tab lists the map's own interaction points, nearest first:
 
-- **Pickup prompts / clicks** — a `ProximityPrompt` (the "hold E" bar) or a `ClickDetector`. Tapping a row fires it through the game's own server handler, so the item arrives for real and other players see it. Uses `fireproximityprompt` / `fireclickdetector` when the executor has them, and falls back to simulating the key hold.
-- **Tools in map** — every `Tool` currently in `workspace`. Tap to teleport onto it, or **Touch** to call `firetouchinterest` so a `Touched` handler runs without moving you.
+- **Pickup prompts / clicks** — a `ProximityPrompt` (the "hold E" bar) or a `ClickDetector`. Tapping a row fires it through the game's own server handler. Uses `fireproximityprompt` / `fireclickdetector` when the executor has them, and falls back to simulating the key hold.
+- **Tools in map** — every `Tool` currently in `workspace`. Three actions per row:
+  - tap the name — teleport onto the tool
+  - **Take** — press the map's own pickup (prompt, then click, then touch), then watch your Backpack for the result and equip it
+  - **Touch** — `firetouchinterest` only, for maps that grant from a `Touched` handler
 
-None of this bypasses the game's own checks. If the server verifies distance, cooldown, or UserId before granting an item, that check still applies — the utility presses the button, it does not rewrite the handler.
+Every pickup reports what actually happened:
+
+```
+Sword -> backpack: Sword        the server gave it to you, now equipped
+Coin - Pick up: no item in backpack - map hands it out another way
+```
+
+There is deliberately no local clone. A tool copied into your Backpack by the client exists only on your machine: the server does not know it is yours, it cannot be equipped properly, its server Scripts never run, and it disappears on respawn. A local copy would look like it worked and do nothing.
+
+So "item masuk tas dan bisa dipakai" happens when the map's own handler runs — which is what Take does. If the server verifies distance, cooldown, or UserId before granting an item, that check still applies. The utility presses the button; it does not rewrite the handler.
+
+If a map grants tools from a custom `RemoteEvent` instead, no generic pickup can guess its name. Open the Remote tab, scan, and look for names like `GiveTool`, `Buy`, `Claim`, `Pickup`, then fire them with the item name as the argument.
 
 ## Notes
 
