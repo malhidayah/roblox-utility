@@ -69,14 +69,44 @@ local function setStatus(text)
     warn("[Utility] " .. text)
 end
 
-local function findPlayer(name)
-    if not name or name == "" then return nil end
+-- Accepts username, display name (in-game name), or numeric UserId.
+local function findPlayer(query)
+    query = tostring(query or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if query == "" then return nil end
+    local q = query:lower()
+    local asId = tonumber(query)
+
+    -- exact username / display name
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LP and plr.Name:lower():sub(1, #name) == name:lower() then
+        if plr ~= LP and (plr.Name:lower() == q or plr.DisplayName:lower() == q) then
             return plr
         end
     end
+
+    -- exact UserId
+    if asId then
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LP and plr.UserId == asId then return plr end
+        end
+    end
+
+    -- partial match on username or display name
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP and (plr.Name:lower():find(q, 1, true) or plr.DisplayName:lower():find(q, 1, true)) then
+            return plr
+        end
+    end
+
     return nil
+end
+
+-- Finds a player or falls back to a raw UserId (works even if they left).
+local function resolveTarget(query)
+    local plr = findPlayer(query)
+    if plr then return plr, plr.UserId end
+    local id = tonumber((tostring(query or ""):gsub("%s+", "")))
+    if id then return nil, id end
+    return nil, nil
 end
 
 -- ---------------------------------------------------------------- fly
@@ -147,6 +177,36 @@ local function noclipSweep()
     end
 end
 
+-- Tells us *why* noclip might still fail: who simulates the character,
+-- whether it is anchored, and whether constraints are holding it.
+local function noclipReport()
+    local c, _, hrp = getChar()
+    if not hrp then return "noclip: no character" end
+
+    local total, colliding = 0, 0
+    local constraints = 0
+    for _, p in ipairs(c:GetDescendants()) do
+        if p:IsA("BasePart") then
+            total += 1
+            if p.CanCollide then colliding += 1 end
+        end
+        if p:IsA("AlignPosition") or p:IsA("AlignOrientation")
+        or p:IsA("BodyPosition") or p:IsA("BodyVelocity")
+        or p:IsA("LinearVelocity") or p:IsA("BodyGyro") then
+            constraints += 1
+        end
+    end
+
+    local owner = "?"
+    pcall(function()
+        local o = hrp:GetNetworkOwner()
+        owner = o and o.Name or "server"
+    end)
+
+    return ("noclip: %d parts, collide=%d, owner=%s, anchored=%s, constraints=%d")
+        :format(total, colliding, owner, tostring(hrp.Anchored), constraints)
+end
+
 -- last resort for games that re-enable CanCollide every frame
 local function installCanCollideHook()
     if noclipHook then return end
@@ -207,23 +267,11 @@ local function noclipOn()
     if noclipConn then noclipConn:Disconnect() end
     noclipConn = RunService.Stepped:Connect(noclipSweep)
 
+    -- Hook immediately rather than waiting to lose a frame race.
+    installCanCollideHook()
+
     task.delay(1, function()
-        if not state.noclip then return end
-        local cc = LP.Character
-        if not cc then return end
-        local total, colliding = 0, 0
-        for _, p in ipairs(cc:GetDescendants()) do
-            if p:IsA("BasePart") then
-                total += 1
-                if p.CanCollide then colliding += 1 end
-            end
-        end
-        if colliding > 0 then
-            setStatus(("noclip: %d/%d still colliding - escalating"):format(colliding, total))
-            installCanCollideHook()
-        else
-            setStatus(("noclip: active on %d parts"):format(total))
-        end
+        if state.noclip then setStatus(noclipReport()) end
     end)
 
     return true
@@ -362,6 +410,86 @@ LP.CharacterAdded:Connect(function()
     end
     if state.noclip then noclipOn() end
 end)
+
+-- ---------------------------------------------------------------- avatar tools
+
+local SCALES = { 0.4, 0.6, 0.8, 1, 1.4, 2, 3, 5 }
+local scaleIndex = 4
+
+local function applyScale()
+    local c, hum = getChar()
+    if not c then return false, "no character" end
+    local n = SCALES[scaleIndex]
+    local ok = pcall(function() c:ScaleTo(n) end)
+    if not ok and hum then
+        pcall(function()
+            if hum.BodyHeightScale then hum.BodyHeightScale.Value = n end
+            if hum.BodyWidthScale then hum.BodyWidthScale.Value = n end
+            if hum.BodyDepthScale then hum.BodyDepthScale.Value = n end
+            if hum.HeadScale then hum.HeadScale.Value = n end
+        end)
+    end
+    setStatus(("scale: %.2fx"):format(n))
+    return true
+end
+
+local EMOTES = {
+    { name = "Dance",  id = 507771019 },
+    { name = "Dance2", id = 507776043 },
+    { name = "Wave",   id = 507770239 },
+    { name = "Point",  id = 507770453 },
+    { name = "Laugh",  id = 507770818 },
+    { name = "Cheer",  id = 507770677 },
+}
+
+local emoteTrack
+local function playEmote(id)
+    local _, hum = getChar()
+    if not hum then return false, "no character" end
+    local animator = hum:FindFirstChildOfClass("Animator")
+    if not animator then return false, "no animator" end
+
+    if emoteTrack then pcall(function() emoteTrack:Stop() end) end
+
+    local anim = Instance.new("Animation")
+    anim.AnimationId = "rbxassetid://" .. tostring(id)
+    local ok, track = pcall(function() return animator:LoadAnimation(anim) end)
+    if not ok or not track then return false, "load blocked" end
+    track.Looped = true
+    track:Play()
+    emoteTrack = track
+    return true
+end
+
+-- Copies appearance. Works by UserId too, even if the player already left.
+local function copyOutfit(query)
+    local _, hum = getChar()
+    if not hum then return false, "no character" end
+
+    local target, userId = resolveTarget(query)
+    local desc
+
+    if target and target.Character then
+        local th = target.Character:FindFirstChildOfClass("Humanoid")
+        if th then
+            local ok, d = pcall(function() return th:GetAppliedDescription() end)
+            if ok then desc = d end
+        end
+    end
+
+    if not desc and userId then
+        local ok, d = pcall(function()
+            return Players:GetHumanoidDescriptionFromUserId(userId)
+        end)
+        if ok then desc = d end
+    end
+
+    if not desc then return false, "could not read description" end
+
+    local ok = pcall(function() hum:ApplyDescription(desc) end)
+    if not ok then return false, "ApplyDescription blocked by game" end
+    return true
+end
 
 -- ---------------------------------------------------------------- ui
 
@@ -590,6 +718,142 @@ bringBtn.MouseButton1Click:Connect(function()
     troot.CFrame = hrp.CFrame + Vector3.new(0, 0, 3)
     setStatus("bring attempt on " .. target.Name .. " - server may snap back")
 end)
+
+-- avatar section
+local function sectionLabel(text, order)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -4, 0, 18)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = Color3.fromRGB(120, 120, 132)
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 10
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.LayoutOrder = order
+    lbl.Parent = list
+    return lbl
+end
+
+local function flatButton(text, order, height)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, -4, 0, height or 30)
+    b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    b.Text = "  " .. text
+    b.TextColor3 = Color3.fromRGB(200, 200, 208)
+    b.Font = Enum.Font.Gotham
+    b.TextSize = 12
+    b.TextXAlignment = Enum.TextXAlignment.Left
+    b.AutoButtonColor = false
+    b.BorderSizePixel = 0
+    b.LayoutOrder = order
+    b.Parent = list
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = b
+    return b
+end
+
+sectionLabel("AVATAR", 101)
+
+local copyBtn = flatButton("Copy outfit (name / UserId above)", 102)
+copyBtn.MouseButton1Click:Connect(function()
+    local ok, err = copyOutfit(tpBox.Text)
+    if ok then
+        setStatus("outfit copied from " .. tpBox.Text)
+    else
+        notify("Copy outfit: " .. tostring(err))
+    end
+end)
+
+local sizeRow = Instance.new("Frame")
+sizeRow.Size = UDim2.new(1, -4, 0, 28)
+sizeRow.BackgroundTransparency = 1
+sizeRow.BorderSizePixel = 0
+sizeRow.LayoutOrder = 103
+sizeRow.Parent = list
+
+local function smallBtn(text, xScale, xOffset, widthScale, widthOffset, parent)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(widthScale, widthOffset, 1, 0)
+    b.Position = UDim2.new(xScale, xOffset, 0, 0)
+    b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    b.Text = text
+    b.TextColor3 = Color3.fromRGB(210, 210, 218)
+    b.Font = Enum.Font.Gotham
+    b.TextSize = 12
+    b.BorderSizePixel = 0
+    b.AutoButtonColor = false
+    b.Parent = parent
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = b
+    return b
+end
+
+local minusBtn = smallBtn("Size -", 0, 0, 0.33, -2, sizeRow)
+local resetBtn = smallBtn("1x",     0.33, 1, 0.34, -2, sizeRow)
+local plusBtn  = smallBtn("Size +", 0.67, 2, 0.33, 0, sizeRow)
+
+minusBtn.MouseButton1Click:Connect(function()
+    scaleIndex = math.max(1, scaleIndex - 1)
+    local ok, err = applyScale()
+    if not ok then notify(tostring(err)) end
+    resetBtn.Text = ("%.2fx"):format(SCALES[scaleIndex])
+end)
+
+plusBtn.MouseButton1Click:Connect(function()
+    scaleIndex = math.min(#SCALES, scaleIndex + 1)
+    local ok, err = applyScale()
+    if not ok then notify(tostring(err)) end
+    resetBtn.Text = ("%.2fx"):format(SCALES[scaleIndex])
+end)
+
+resetBtn.MouseButton1Click:Connect(function()
+    scaleIndex = 4
+    applyScale()
+    resetBtn.Text = "1x"
+end)
+
+sectionLabel("EMOTES", 104)
+
+local emoteFrame = Instance.new("Frame")
+emoteFrame.Size = UDim2.new(1, -4, 0, 60)
+emoteFrame.BackgroundTransparency = 1
+emoteFrame.BorderSizePixel = 0
+emoteFrame.LayoutOrder = 105
+emoteFrame.Parent = list
+
+local grid = Instance.new("UIGridLayout")
+grid.CellSize = UDim2.new(1 / 3, -4, 0, 28)
+grid.CellPadding = UDim2.new(0, 4, 0, 4)
+grid.SortOrder = Enum.SortOrder.LayoutOrder
+grid.Parent = emoteFrame
+
+for i, e in ipairs(EMOTES) do
+    local b = Instance.new("TextButton")
+    b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    b.Text = e.name
+    b.TextColor3 = Color3.fromRGB(210, 210, 218)
+    b.Font = Enum.Font.Gotham
+    b.TextSize = 11
+    b.BorderSizePixel = 0
+    b.AutoButtonColor = false
+    b.LayoutOrder = i
+    b.Parent = emoteFrame
+
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = b
+
+    b.MouseButton1Click:Connect(function()
+        local ok, err = playEmote(e.id)
+        if ok then
+            setStatus("emote: " .. e.name)
+        else
+            notify("Emote: " .. tostring(err))
+        end
+    end)
+end
 
 -- drag
 local dragging, dragStart, startPos
