@@ -752,6 +752,13 @@ end
 
 local parent = (gethui and gethui()) or LP:WaitForChild("PlayerGui")
 
+-- Re-running the loader replaces the old window instead of stacking a second one.
+for _, obj in ipairs(parent:GetChildren()) do
+    if obj.Name == "UtilUI" then
+        pcall(function() obj:Destroy() end)
+    end
+end
+
 local screen = Instance.new("ScreenGui")
 screen.Name = "UtilUI"
 screen.ResetOnSpawn = false
