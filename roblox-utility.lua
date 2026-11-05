@@ -330,13 +330,15 @@ end
 -- Client-side only: hides your character on your screen, not for other players.
 
 local invisConn
+local invisSaved = {}
 
 local function invisibleSweep()
     local c = LP.Character
     if not c then return end
     for _, p in ipairs(c:GetDescendants()) do
         if p:IsA("BasePart") then
-            p.LocalTransparencyModifier = 1
+            p.Transparency = 1              -- replicated: others may see it
+            p.LocalTransparencyModifier = 1 -- guaranteed on your screen
         end
     end
 end
@@ -344,19 +346,25 @@ end
 local function invisibleOff()
     state.invisible = false
     if invisConn then invisConn:Disconnect(); invisConn = nil end
-    local c = LP.Character
-    if c then
-        for _, p in ipairs(c:GetDescendants()) do
-            if p:IsA("BasePart") then
-                p.LocalTransparencyModifier = 0
-            end
+    for part, t in pairs(invisSaved) do
+        if part and part.Parent then
+            pcall(function() part.Transparency = t end)
+            pcall(function() part.LocalTransparencyModifier = 0 end)
         end
     end
+    invisSaved = {}
 end
 
 local function invisibleOn()
-    if not LP.Character then return false end
+    local c = LP.Character
+    if not c then return false end
     state.invisible = true
+    invisSaved = {}
+    for _, p in ipairs(c:GetDescendants()) do
+        if p:IsA("BasePart") then
+            invisSaved[p] = p.Transparency
+        end
+    end
     if invisConn then invisConn:Disconnect() end
     invisConn = RunService.Stepped:Connect(invisibleSweep)
     invisibleSweep()
