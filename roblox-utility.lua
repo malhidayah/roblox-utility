@@ -1388,6 +1388,27 @@ worldRow2.Parent = pageWorld
 local tpNearestBtn = smallBtn(worldRow2, "TP nearest", 0, 0, 0.5, -2)
 local pullBtn = smallBtn(worldRow2, "Pull all", 0.5, 1, 0.5, -1)
 
+local scanNamesBtn = flatButton(pageWorld, "Scan part names in this map", 5, 26)
+scanNamesBtn.TextXAlignment = Enum.TextXAlignment.Center
+
+local nameList = Instance.new("ScrollingFrame")
+nameList.Size = UDim2.new(1, -4, 0, 120)
+nameList.BackgroundColor3 = Color3.fromRGB(26, 26, 31)
+nameList.BorderSizePixel = 0
+nameList.ScrollBarThickness = 3
+nameList.CanvasSize = UDim2.new(0, 0, 0, 0)
+nameList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+nameList.LayoutOrder = 6
+nameList.Parent = pageWorld
+
+local nlCorner = Instance.new("UICorner")
+nlCorner.CornerRadius = UDim.new(0, 6)
+nlCorner.Parent = nameList
+
+local nlLayout = Instance.new("UIListLayout")
+nlLayout.Padding = UDim.new(0, 2)
+nlLayout.Parent = nameList
+
 local hint = Instance.new("TextLabel")
 hint.Size = UDim2.new(1, -4, 0, 96)
 hint.BackgroundColor3 = Color3.fromRGB(28, 28, 33)
@@ -1399,7 +1420,7 @@ hint.TextSize = 11
 hint.TextXAlignment = Enum.TextXAlignment.Left
 hint.TextYAlignment = Enum.TextYAlignment.Top
 hint.TextWrapped = true
-hint.LayoutOrder = 5
+hint.LayoutOrder = 7
 hint.Parent = pageWorld
 
 local whCorner = Instance.new("UICorner")
@@ -1465,10 +1486,16 @@ local function tpNearestItem()
         notify("Character not loaded")
         return
     end
-    local list = matchingParts(worldFilter.Text:lower(), 400)
+    local q = worldFilter.Text:lower()
+    if q == "" then
+        notify("Filter empty - press Scan part names")
+        setStatus("world: filter empty")
+        return
+    end
+    local list = matchingParts(q, 400)
     if #list == 0 then
         notify("No part matches the filter")
-        setStatus("world: no match for " .. worldFilter.Text)
+        setStatus("world: no match for " .. q)
         return
     end
 
@@ -1490,10 +1517,16 @@ local function pullAllItems()
         notify("Character not loaded")
         return
     end
-    local list = matchingParts(worldFilter.Text:lower(), 60)
+    local q = worldFilter.Text:lower()
+    if q == "" then
+        notify("Filter empty - press Scan part names")
+        setStatus("world: filter empty")
+        return
+    end
+    local list = matchingParts(q, 60)
     if #list == 0 then
         notify("No part matches the filter")
-        setStatus("world: no match for " .. worldFilter.Text)
+        setStatus("world: no match for " .. q)
         return
     end
 
@@ -1547,6 +1580,82 @@ local function styleWorldBtns()
     grabBtn.BackgroundColor3 = clickGrab and Color3.fromRGB(48, 110, 70) or Color3.fromRGB(34, 34, 40)
     grabBtn.TextColor3 = clickGrab and Color3.fromRGB(200, 255, 210) or Color3.fromRGB(210, 210, 218)
 end
+
+local function collectPartNames()
+    local counts = {}
+    for _, inst in ipairs(workspace:GetDescendants()) do
+        if inst:IsA("BasePart") then
+            counts[inst.Name] = (counts[inst.Name] or 0) + 1
+        end
+    end
+
+    local list = {}
+    for name, n in pairs(counts) do
+        table.insert(list, { name = name, count = n })
+    end
+    table.sort(list, function(a, b)
+        if a.count == b.count then return a.name < b.name end
+        return a.count > b.count
+    end)
+    return list
+end
+
+local function renderPartNames()
+    for _, ch in ipairs(nameList:GetChildren()) do
+        if ch:IsA("TextButton") then ch:Destroy() end
+    end
+
+    local list = collectPartNames()
+    if #list == 0 then
+        local l = Instance.new("TextLabel")
+        l.Size = UDim2.new(1, -6, 0, 24)
+        l.BackgroundTransparency = 1
+        l.Text = "  no parts found"
+        l.TextColor3 = Color3.fromRGB(120, 120, 130)
+        l.Font = Enum.Font.Gotham
+        l.TextSize = 10
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.Parent = nameList
+        return 0
+    end
+
+    for i = 1, math.min(#list, 40) do
+        local entry = list[i]
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(1, -6, 0, 24)
+        b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+        b.Text = ("  %s   x%d"):format(entry.name, entry.count)
+        b.TextColor3 = Color3.fromRGB(200, 210, 225)
+        b.Font = Enum.Font.Gotham
+        b.TextSize = 10
+        b.TextXAlignment = Enum.TextXAlignment.Left
+        b.TextTruncate = Enum.TextTruncate.AtEnd
+        b.AutoButtonColor = false
+        b.BorderSizePixel = 0
+        b.Parent = nameList
+
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, 4)
+        c.Parent = b
+
+        b.MouseButton1Click:Connect(function()
+            worldFilter.Text = entry.name
+            if not itemEsp then
+                itemEsp = true
+                styleWorldBtns()
+            end
+            sweepItemEsp()
+            setStatus(("filter: %s (x%d)"):format(entry.name, entry.count))
+        end)
+    end
+
+    return #list
+end
+
+scanNamesBtn.MouseButton1Click:Connect(function()
+    local n = renderPartNames()
+    setStatus(("world: %d unique part names"):format(n))
+end)
 
 espItemsBtn.MouseButton1Click:Connect(function()
     itemEsp = not itemEsp
@@ -1885,6 +1994,23 @@ local function safePath(inst)
     return table.concat(parts, ".")
 end
 
+-- Compact one-line rendering of any value, used by both the fire result and the spy log.
+local function describeArg(v)
+    local t = typeof(v)
+    if t == "string" then
+        local s = v
+        if #s > 28 then s = s:sub(1, 28) .. "..." end
+        return ("%q"):format(s)
+    elseif t == "number" or t == "boolean" then
+        return tostring(v)
+    elseif t == "Instance" then
+        return "<" .. v.ClassName .. ":" .. v.Name .. ">"
+    elseif t == "nil" then
+        return "nil"
+    end
+    return "<" .. t .. ">"
+end
+
 local function collectRemotes()
     remoteCache = {}
     local seen = {}
@@ -2079,7 +2205,12 @@ fireBtn.MouseButton1Click:Connect(function()
     end)
 
     if ok then
-        setStatus(("fired %s (%d args)"):format(target.Name, argCount(args)))
+        local note = ""
+        if target:IsA("RemoteFunction") then
+            note = " -> " .. describeArg(res)
+            print("[Utility] " .. target.Name .. note)
+        end
+        setStatus(("fired %s (%d args)%s"):format(target.Name, argCount(args), note))
     else
         notify("Fire failed: " .. tostring(res))
         setStatus("fire failed: " .. tostring(res))
@@ -2147,22 +2278,6 @@ local function addSpyLine(text)
             renderSpy()
         end)
     end
-end
-
-local function describeArg(v)
-    local t = typeof(v)
-    if t == "string" then
-        local s = v
-        if #s > 28 then s = s:sub(1, 28) .. "..." end
-        return ("%q"):format(s)
-    elseif t == "number" or t == "boolean" then
-        return tostring(v)
-    elseif t == "Instance" then
-        return "<" .. v.ClassName .. ":" .. v.Name .. ">"
-    elseif t == "nil" then
-        return "nil"
-    end
-    return "<" .. t .. ">"
 end
 
 local spyHook
