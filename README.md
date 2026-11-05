@@ -59,6 +59,21 @@ So "item masuk tas dan bisa dipakai" happens when the map's own handler runs —
 
 If a map grants tools from a custom `RemoteEvent` instead, no generic pickup can guess its name. Open the Remote tab, scan, and look for names like `GiveTool`, `Buy`, `Claim`, `Pickup`, then fire them with the item name as the argument.
 
+## Items that cost Robux or need VIP
+
+This is the one category the utility cannot hand you, and it is worth knowing why.
+
+- **Developer product / gamepass purchase** — the grant happens in the game's server code: `ProcessReceipt` (products) or `UserOwnsGamePassAsync` (passes). Roblox verifies the receipt on the backend. No client script can make that check pass, and a client that fakes it is committing payment fraud, not cheating.
+- **VIP area behind a door** — you can physically get in with Noclip or a teleport. What you cannot do is make the server grant the VIP-only item: that handler re-checks ownership.
+- **`PromptGamePassPurchase`** — this only opens the real Robux purchase dialog. It does not grant anything for free.
+
+What the utility does instead:
+
+- Prompts whose text looks like a purchase (`buy`, `purchase`, `robux`, `R$`, `vip`, `premium`, `gamepass`, `donate`, `checkout`, `pay`) are marked **`[PAID]`** in the scan list.
+- **Nearest** and **Auto in range** skip them, so an automatic action can never spend your Robux. Manual tap still fires them, because that is your decision.
+
+A paid prompt that does give you the item without payment means the game checks ownership on the client, which is a bug on their side, not a feature of this script.
+
 ## Notes
 
 - Luau caps a function at 200 local variables. The UI lives in `buildUI()` for that reason; keep new UI code inside it.

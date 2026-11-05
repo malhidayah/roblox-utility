@@ -2450,6 +2450,25 @@ local function buildUI()
             return tostring(label)
         end
 
+        -- Prompts that cost Robux, need a gamepass, or sit behind VIP. Auto
+        -- pickup must never fire one of these on its own.
+        local PAID_WORDS = {
+            "buy", "purchase", "robux", "r$", "vip", "premium",
+            "gamepass", "donate", "checkout", "pay ",
+        }
+
+        local function promptIsPaid(prompt)
+            local text = ""
+            pcall(function()
+                text = tostring(prompt.ObjectText or "") .. " " .. tostring(prompt.ActionText or "")
+            end)
+            text = text:lower()
+            for _, word in ipairs(PAID_WORDS) do
+                if text:find(word, 1, true) then return true end
+            end
+            return false
+        end
+
         -- ---------------------------------------------------- backpack check
 
         -- A tool only exists for real once the server puts it in your Backpack.
@@ -2580,6 +2599,9 @@ local function buildUI()
                 if action ~= "" and not name:find(action, 1, true) then
                     name = name .. " - " .. action
                 end
+                if promptIsPaid(prompt) then
+                    name = "[PAID] " .. name
+                end
 
                 local d = distanceTo(parent)
                 local text = (d < math.huge) and ("%s  (%.0f)"):format(name, d) or name
@@ -2603,13 +2625,21 @@ local function buildUI()
 
         promptNearBtn.MouseButton1Click:Connect(function()
             local list = collectPrompts(20)
-            if #list == 0 then
-                notify("No prompt in this map")
+
+            -- Nearest is an automatic action, so it must not spend Robux.
+            local free = {}
+            for _, prompt in ipairs(list) do
+                if not promptIsPaid(prompt) then table.insert(free, prompt) end
+            end
+
+            if #free == 0 then
+                notify(#list == 0 and "No prompt in this map" or "Only paid prompts nearby")
                 return
             end
+
             local before = backpackTools()
-            local label = promptLabel(list[1])
-            if firePrompt(list[1]) then
+            local label = promptLabel(free[1])
+            if firePrompt(free[1]) then
                 task.spawn(function() reportGain(before, label) end)
             end
         end)
@@ -2648,6 +2678,12 @@ local function buildUI()
         -- enough to use, so this never reaches across the map.
         PromptService.PromptShown:Connect(function(prompt)
             if not autoPrompt or not prompt or not prompt.Parent then return end
+
+            -- Never let auto mode spend Robux or open a purchase dialog.
+            if promptIsPaid(prompt) then
+                setStatus("auto skipped paid prompt: " .. promptLabel(prompt))
+                return
+            end
 
             local now = os.clock()
             local last = autoSeen[prompt]
