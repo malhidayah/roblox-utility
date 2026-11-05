@@ -983,6 +983,7 @@ local pages = {}
 local tabButtons = {}
 local activeTab = "main"
 local refreshPlayerList
+local renderRemotes
 
 local function selectTab(key)
     activeTab = key
@@ -997,6 +998,9 @@ local function selectTab(key)
     if key == "player" and refreshPlayerList then
         refreshPlayerList()
     end
+    if key == "remotes" and renderRemotes then
+        renderRemotes()
+    end
 end
 
 local tabBar = Instance.new("Frame")
@@ -1007,14 +1011,15 @@ tabBar.BorderSizePixel = 0
 tabBar.Parent = main
 
 local tabDefs = {
-    { key = "main",   label = "Main" },
-    { key = "player", label = "Player" },
-    { key = "avatar", label = "Avatar" },
-    { key = "emote",  label = "Emote" },
+    { key = "main",    label = "Main" },
+    { key = "player",  label = "Player" },
+    { key = "avatar",  label = "Avatar" },
+    { key = "emote",   label = "Emote" },
+    { key = "remotes", label = "Remote" },
 }
 
 for i, t in ipairs(tabDefs) do
-    local b = smallBtn(tabBar, t.label, (i - 1) * 0.25, (i - 1) * 2, 0.25, -2)
+    local b = smallBtn(tabBar, t.label, (i - 1) * 0.2, (i - 1) * 2, 0.2, -2)
     b.TextSize = 11
     b.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
     tabButtons[t.key] = b
@@ -1056,6 +1061,7 @@ local pageMain = pages["main"]
 local pagePlayer = pages["player"]
 local pageAvatar = pages["avatar"]
 local pageEmote = pages["emote"]
+local pageRemotes = pages["remotes"]
 
 -- ---------------------------------------------------------------- main tab
 
@@ -1521,6 +1527,364 @@ stopBtn.MouseButton1Click:Connect(stopEmote)
 
 styleCats()
 renderEmotes()
+
+-- ---------------------------------------------------------------- remotes tab
+
+sectionLabel(pageRemotes, "REMOTE SCANNER", 1)
+
+local remoteFilter = Instance.new("TextBox")
+remoteFilter.Size = UDim2.new(1, -4, 0, 28)
+remoteFilter.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+remoteFilter.PlaceholderText = "filter by name or path..."
+remoteFilter.Text = ""
+remoteFilter.TextColor3 = Color3.fromRGB(220, 220, 226)
+remoteFilter.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+remoteFilter.Font = Enum.Font.Gotham
+remoteFilter.TextSize = 12
+remoteFilter.BorderSizePixel = 0
+remoteFilter.ClearTextOnFocus = false
+remoteFilter.LayoutOrder = 2
+remoteFilter.Parent = pageRemotes
+
+local rfCorner = Instance.new("UICorner")
+rfCorner.CornerRadius = UDim.new(0, 6)
+rfCorner.Parent = remoteFilter
+
+local scanBtn = flatButton(pageRemotes, "Scan game for remotes", 3, 28)
+scanBtn.TextXAlignment = Enum.TextXAlignment.Center
+scanBtn.BackgroundColor3 = Color3.fromRGB(38, 70, 55)
+
+local remoteList = Instance.new("ScrollingFrame")
+remoteList.Size = UDim2.new(1, -4, 0, 150)
+remoteList.BackgroundColor3 = Color3.fromRGB(26, 26, 31)
+remoteList.BorderSizePixel = 0
+remoteList.ScrollBarThickness = 3
+remoteList.CanvasSize = UDim2.new(0, 0, 0, 0)
+remoteList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+remoteList.LayoutOrder = 4
+remoteList.Parent = pageRemotes
+
+local rlCorner = Instance.new("UICorner")
+rlCorner.CornerRadius = UDim.new(0, 6)
+rlCorner.Parent = remoteList
+
+local rlLayout = Instance.new("UIListLayout")
+rlLayout.Padding = UDim.new(0, 2)
+rlLayout.Parent = remoteList
+
+sectionLabel(pageRemotes, "SPY (what the game fires)", 5)
+
+local spyRow = Instance.new("Frame")
+spyRow.Size = UDim2.new(1, -4, 0, 28)
+spyRow.BackgroundTransparency = 1
+spyRow.BorderSizePixel = 0
+spyRow.LayoutOrder = 6
+spyRow.Parent = pageRemotes
+
+local spyBtn = smallBtn(spyRow, "Spy: OFF", 0, 0, 0.62, -2)
+spyBtn.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+local clearSpyBtn = smallBtn(spyRow, "Clear", 0.62, 1, 0.38, -1)
+
+local spyLogFrame = Instance.new("ScrollingFrame")
+spyLogFrame.Size = UDim2.new(1, -4, 0, 110)
+spyLogFrame.BackgroundColor3 = Color3.fromRGB(26, 26, 31)
+spyLogFrame.BorderSizePixel = 0
+spyLogFrame.ScrollBarThickness = 3
+spyLogFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+spyLogFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+spyLogFrame.LayoutOrder = 7
+spyLogFrame.Parent = pageRemotes
+
+local slCorner = Instance.new("UICorner")
+slCorner.CornerRadius = UDim.new(0, 6)
+slCorner.Parent = spyLogFrame
+
+local slLayout = Instance.new("UIListLayout")
+slLayout.Padding = UDim.new(0, 1)
+slLayout.Parent = spyLogFrame
+
+local REMOTE_CLASSES = {
+    RemoteEvent = true,
+    RemoteFunction = true,
+    UnreliableRemoteEvent = true,
+}
+
+local remoteCache = {}
+local remotesScanned = false
+
+-- Walk parents instead of GetFullName so this is safe to call inside the namecall hook.
+local function safePath(inst)
+    local parts = {}
+    local cur = inst
+    local depth = 0
+    while cur and cur ~= game and depth < 12 do
+        table.insert(parts, 1, cur.Name)
+        cur = cur.Parent
+        depth += 1
+    end
+    return table.concat(parts, ".")
+end
+
+local function collectRemotes()
+    remoteCache = {}
+    local seen = {}
+    local roots = {}
+
+    local okRS, rs = pcall(function() return game:GetService("ReplicatedStorage") end)
+    if okRS and rs then table.insert(roots, rs) end
+    local okRF, rf = pcall(function() return game:GetService("ReplicatedFirst") end)
+    if okRF and rf then table.insert(roots, rf) end
+    table.insert(roots, workspace)
+
+    for _, root in ipairs(roots) do
+        local okD, desc = pcall(function() return root:GetDescendants() end)
+        if okD and desc then
+            for _, inst in ipairs(desc) do
+                if REMOTE_CLASSES[inst.ClassName] and not seen[inst] then
+                    seen[inst] = true
+                    table.insert(remoteCache, inst)
+                end
+            end
+        end
+    end
+
+    table.sort(remoteCache, function(a, b)
+        return safePath(a):lower() < safePath(b):lower()
+    end)
+
+    remotesScanned = true
+    return #remoteCache
+end
+
+local function addRemoteRow(text, color, onClick)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, -6, 0, 24)
+    b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    b.Text = "  " .. text
+    b.TextColor3 = color
+    b.Font = Enum.Font.Gotham
+    b.TextSize = 10
+    b.TextXAlignment = Enum.TextXAlignment.Left
+    b.TextTruncate = Enum.TextTruncate.AtEnd
+    b.AutoButtonColor = false
+    b.BorderSizePixel = 0
+    b.Parent = remoteList
+
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 4)
+    c.Parent = b
+
+    if onClick then
+        b.MouseButton1Click:Connect(onClick)
+    end
+    return b
+end
+
+renderRemotes = function()
+    for _, ch in ipairs(remoteList:GetChildren()) do
+        if ch:IsA("TextButton") then ch:Destroy() end
+    end
+
+    if not remotesScanned then
+        addRemoteRow("press Scan to list remotes", Color3.fromRGB(130, 130, 140))
+        return
+    end
+
+    if #remoteCache == 0 then
+        addRemoteRow("no RemoteEvent / RemoteFunction found", Color3.fromRGB(150, 130, 130))
+        return
+    end
+
+    local q = remoteFilter.Text:lower()
+    local shown = 0
+    local total = 0
+
+    for _, inst in ipairs(remoteCache) do
+        local path = safePath(inst)
+        if q == "" or path:lower():find(q, 1, true) then
+            total += 1
+            if shown < 250 then
+                shown += 1
+                addRemoteRow(path, Color3.fromRGB(200, 210, 225), function()
+                    if setclipboard then
+                        setclipboard(path)
+                        setStatus("copied: " .. path)
+                    else
+                        setStatus("path: " .. path)
+                    end
+                end)
+            end
+        end
+    end
+
+    if total > shown then
+        addRemoteRow(("+%d more - narrow the filter"):format(total - shown), Color3.fromRGB(130, 130, 140))
+    end
+end
+
+remoteFilter:GetPropertyChangedSignal("Text"):Connect(function()
+    renderRemotes()
+end)
+
+scanBtn.MouseButton1Click:Connect(function()
+    local n = collectRemotes()
+    renderRemotes()
+    setStatus(("remote scan: %d found"):format(n))
+end)
+
+-- ---------------------------------------------------------------- spy
+
+local spyEnabled = false
+local spyLog = {}
+local spyRenderQueued = false
+
+local function renderSpy()
+    for _, ch in ipairs(spyLogFrame:GetChildren()) do
+        if ch:IsA("TextLabel") then ch:Destroy() end
+    end
+
+    if #spyLog == 0 then
+        local l = Instance.new("TextLabel")
+        l.Size = UDim2.new(1, -6, 0, 24)
+        l.BackgroundTransparency = 1
+        l.Text = "  nothing recorded yet"
+        l.TextColor3 = Color3.fromRGB(120, 120, 130)
+        l.Font = Enum.Font.Gotham
+        l.TextSize = 10
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.Parent = spyLogFrame
+        return
+    end
+
+    for _, line in ipairs(spyLog) do
+        local l = Instance.new("TextLabel")
+        l.Size = UDim2.new(1, -6, 0, 22)
+        l.BackgroundTransparency = 1
+        l.Text = "  " .. line
+        l.TextColor3 = Color3.fromRGB(200, 215, 205)
+        l.Font = Enum.Font.Code
+        l.TextSize = 10
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.TextTruncate = Enum.TextTruncate.AtEnd
+        l.Parent = spyLogFrame
+    end
+end
+
+-- Called from inside the namecall hook: queue the UI work instead of doing it here.
+local function addSpyLine(text)
+    table.insert(spyLog, 1, text)
+    while #spyLog > 60 do
+        table.remove(spyLog)
+    end
+    if not spyRenderQueued then
+        spyRenderQueued = true
+        task.defer(function()
+            spyRenderQueued = false
+            renderSpy()
+        end)
+    end
+end
+
+local function describeArg(v)
+    local t = typeof(v)
+    if t == "string" then
+        local s = v
+        if #s > 28 then s = s:sub(1, 28) .. "..." end
+        return ("%q"):format(s)
+    elseif t == "number" or t == "boolean" then
+        return tostring(v)
+    elseif t == "Instance" then
+        return "<" .. v.ClassName .. ":" .. v.Name .. ">"
+    elseif t == "nil" then
+        return "nil"
+    end
+    return "<" .. t .. ">"
+end
+
+local spyHook
+
+local function installSpy()
+    if spyHook then return true end
+
+    local okMT, mt = pcall(getrawmetatable, game)
+    if not okMT or type(mt) ~= "table" then
+        return false, "getrawmetatable unavailable"
+    end
+
+    local prev = mt.__namecall
+    if type(prev) ~= "function" then
+        return false, "no __namecall on game metatable"
+    end
+
+    local wrapper = function(self, ...)
+        if spyEnabled then
+            local okM, method = pcall(getnamecallmethod)
+            if okM and (method == "FireServer" or method == "InvokeServer") then
+                local okP, path = pcall(safePath, self)
+                local args = table.pack(...)
+                local parts = {}
+                for i = 1, math.min(args.n, 4) do
+                    table.insert(parts, describeArg(args[i]))
+                end
+                if args.n > 4 then
+                    table.insert(parts, ("+%d"):format(args.n - 4))
+                end
+                addSpyLine(("%s %s(%s)"):format(method, okP and path or "?", table.concat(parts, ", ")))
+            end
+        end
+        return prev(self, ...)
+    end
+
+    if newcclosure then
+        wrapper = newcclosure(wrapper)
+    end
+
+    pcall(setreadonly, mt, false)
+    mt.__namecall = wrapper
+    pcall(setreadonly, mt, true)
+
+    spyHook = { mt = mt, prev = prev }
+    return true
+end
+
+local function styleSpyBtn()
+    if spyEnabled then
+        spyBtn.Text = "Spy: ON"
+        spyBtn.BackgroundColor3 = Color3.fromRGB(48, 110, 70)
+        spyBtn.TextColor3 = Color3.fromRGB(200, 255, 210)
+    else
+        spyBtn.Text = "Spy: OFF"
+        spyBtn.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+        spyBtn.TextColor3 = Color3.fromRGB(210, 210, 218)
+    end
+end
+
+spyBtn.MouseButton1Click:Connect(function()
+    if not spyEnabled then
+        local ok, err = installSpy()
+        if not ok then
+            notify("Spy: " .. tostring(err))
+            setStatus("spy unavailable: " .. tostring(err))
+            return
+        end
+        spyEnabled = true
+        setStatus("spy on - fire a remote in game")
+    else
+        spyEnabled = false
+        setStatus("spy off")
+    end
+    styleSpyBtn()
+end)
+
+clearSpyBtn.MouseButton1Click:Connect(function()
+    spyLog = {}
+    renderSpy()
+    setStatus("spy log cleared")
+end)
+
+styleSpyBtn()
+renderSpy()
+renderRemotes()
 
 -- ---------------------------------------------------------------- window controls
 
