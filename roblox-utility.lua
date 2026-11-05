@@ -53,6 +53,52 @@ local function getChar()
     return nil
 end
 
+-- Some games parent the visible character somewhere other than Player.Character.
+local function findWorkspaceModel(plr)
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if obj:IsA("Model") and (obj.Name == plr.Name or obj.Name == plr.DisplayName) then
+            return obj
+        end
+    end
+    return nil
+end
+
+-- Root part lookup that survives custom rigs and late character loads.
+local function getTargetRoot(plr)
+    if not plr then return nil end
+    local c = plr.Character or findWorkspaceModel(plr)
+    if not c then return nil end
+    local hrp = c:FindFirstChild("HumanoidRootPart")
+    if hrp then return hrp end
+    local hum = c:FindFirstChildOfClass("Humanoid")
+    if hum and hum.RootPart then return hum.RootPart end
+    return c.PrimaryPart
+end
+
+local function resolveRoot(plr, timeout)
+    local root = getTargetRoot(plr)
+    if root then return root end
+    local deadline = os.clock() + (timeout or 2)
+    while os.clock() < deadline do
+        task.wait(0.1)
+        root = getTargetRoot(plr)
+        if root then return root end
+    end
+    return nil
+end
+
+local function describeTarget(plr)
+    if not plr then return "no player matched" end
+    local c = plr.Character
+    local model = c or findWorkspaceModel(plr)
+    return ("%s (@%s, id=%d) char=%s model=%s root=%s"):format(
+        plr.Name, plr.DisplayName, plr.UserId,
+        tostring(c ~= nil),
+        tostring(model ~= nil),
+        tostring(getTargetRoot(plr) ~= nil)
+    )
+end
+
 local function notify(text)
     pcall(function()
         StarterGui:SetCore("SendNotification", {
@@ -433,34 +479,106 @@ local function applyScale()
     return true
 end
 
-local EMOTES = {
-    { name = "Dance",  id = 507771019 },
-    { name = "Dance2", id = 507776043 },
-    { name = "Wave",   id = 507770239 },
-    { name = "Point",  id = 507770453 },
-    { name = "Laugh",  id = 507770818 },
-    { name = "Cheer",  id = 507770677 },
-}
+-- Curated from community emote tables (Eazvy hub, DevForum lists).
+-- cat: "dance" | "kpop" | "viral". Some are UGC assets: if one is private
+-- in your region the button reports "load blocked" instead of playing.
+local EMOTE_DB = {
+    -- classic / dance
+    { name = "Dance",           id = 507771019,        cat = "dance" },
+    { name = "Dance2",          id = 507776043,        cat = "dance" },
+    { name = "Wave",            id = 507770239,        cat = "dance" },
+    { name = "Point",           id = 507770453,        cat = "dance" },
+    { name = "Laugh",           id = 507770818,        cat = "dance" },
+    { name = "Cheer",           id = 507770677,        cat = "dance" },
+    { name = "Floss",           id = 5917459365,       cat = "dance" },
+    { name = "Hype",            id = 3695333486,       cat = "dance" },
+    { name = "Shuffle",         id = 4349242221,       cat = "dance" },
+    { name = "Break Dance",     id = 5915648917,       cat = "dance" },
+    { name = "Robot",           id = 3338025566,       cat = "dance" },
+    { name = "Zombie",          id = 4210116953,       cat = "dance" },
+    { name = "Dolphin",         id = 5918726674,       cat = "dance" },
+    { name = "Samba",           id = 6869766175,       cat = "dance" },
+    { name = "Cha-Cha",         id = 6862001787,       cat = "dance" },
+    { name = "Monkey",          id = 3333499508,       cat = "dance" },
+    { name = "Old Town Road",   id = 5937560570,       cat = "dance" },
+    { name = "Holiday",         id = 5937558680,       cat = "dance" },
+    { name = "Rodeo",           id = 5918728267,       cat = "dance" },
+    { name = "Panini",          id = 5915713518,       cat = "dance" },
+    { name = "Country Line",    id = 5915712534,       cat = "dance" },
+    { name = "Swag Walk",       id = 10478341260,      cat = "dance" },
+    { name = "Chicken Dance",   id = 4841399916,       cat = "dance" },
+    { name = "Cartwheel",       id = 10370351535,      cat = "dance" },
+    { name = "Boom Boom Clap",  id = 10370346995,      cat = "dance" },
+    { name = "Super Charge",    id = 10478338114,      cat = "dance" },
+    { name = "Mini Kong",       id = 17000021306,      cat = "dance" },
+    { name = "Fashion Spin",    id = 131669256082047,  cat = "dance" },
+    { name = "Secret Handshake",id = 71243990877913,   cat = "dance" },
+    { name = "Bone Chillin",    id = 15122972413,      cat = "dance" },
+    { name = "Festive Dance",   id = 15679621440,      cat = "dance" },
+    { name = "Wanna play",      id = 16646423316,      cat = "dance" },
+    { name = "Skadoosh",        id = 16371217304,      cat = "dance" },
+    { name = "TMNT Dance",      id = 18665811005,      cat = "dance" },
+    { name = "NBA Dunk",        id = 132748833449150,  cat = "dance" },
+    { name = "Man City Backflip",id = 13694100677,     cat = "dance" },
 
--- Curated from the community emote tables (Eazvy hub / DevForum lists).
--- Some are UGC emotes: if the asset is private in your region the button
--- reports "load blocked" instead of playing.
-local VIRAL = {
-    { name = "Sturdy",    id = 17746180844 },
-    { name = "Apple",     id = 18946844622 },
-    { name = "HOT TO GO", id = 85267023718407 },
-    { name = "Floss",     id = 5917459365 },
-    { name = "Hype",      id = 3695333486 },
-    { name = "Old Town",  id = 5937560570 },
-    { name = "Rasputin",  id = 114872820353992 },
-    { name = "Squid",     id = 97611664803614 },
-    { name = "M3GAN",     id = 99649534578309 },
-    { name = "SpongeBob", id = 18443245017 },
-    { name = "Skibidi",   id = 134283166482394 },
-    { name = "KATSEYE",   id = 135876612109535 },
-    { name = "Zabb",      id = 129470135909814 },
-    { name = "Shrek",     id = 18524313628 },
-    { name = "Vroom",     id = 18526397037 },
+    -- viral
+    { name = "Sturdy",          id = 17746180844,      cat = "viral" },
+    { name = "Apple",           id = 18946844622,      cat = "viral" },
+    { name = "HOT TO GO",       id = 85267023718407,   cat = "viral" },
+    { name = "Rasputin",        id = 114872820353992,  cat = "viral" },
+    { name = "Squid Thanos",    id = 97611664803614,   cat = "viral" },
+    { name = "Young-hee",       id = 112011282168475,  cat = "viral" },
+    { name = "M3GAN",           id = 99649534578309,   cat = "viral" },
+    { name = "SpongeBob",       id = 18443245017,      cat = "viral" },
+    { name = "Skibidi",         id = 134283166482394,  cat = "viral" },
+    { name = "Shrek Roar",      id = 18524313628,      cat = "viral" },
+    { name = "Vroom Vroom",     id = 18526397037,      cat = "viral" },
+    { name = "Zabb",            id = 129470135909814,  cat = "viral" },
+    { name = "KSI Show Dem",    id = 7198989668,       cat = "viral" },
+    { name = "Nicki Anaconda",  id = 15571450952,      cat = "viral" },
+    { name = "Olivia good 4 u", id = 15517862739,      cat = "viral" },
+    { name = "Bones",           id = 15689279687,      cat = "viral" },
+    { name = "GloRilla",        id = 15689278184,      cat = "viral" },
+    { name = "HIPMOTION",       id = 16572740012,      cat = "viral" },
+    { name = "Starboy",         id = 71105746210464,   cat = "viral" },
+    { name = "Fashion Roadkill",id = 136831243854748,  cat = "viral" },
+    { name = "ALTEGO",          id = 107875941017127,  cat = "viral" },
+    { name = "Klossette",       id = 80995190624232,   cat = "viral" },
+    { name = "Baby Queen",      id = 14352362059,      cat = "viral" },
+    { name = "Paris Hilton",    id = 15392759696,      cat = "viral" },
+
+    -- kpop
+    { name = "Pink Venom",      id = 14548619594,      cat = "kpop" },
+    { name = "Pink Venom 2",    id = 14548620495,      cat = "kpop" },
+    { name = "Shut Down",       id = 14901306096,      cat = "kpop" },
+    { name = "Jisoo Flower",    id = 15439354020,      cat = "kpop" },
+    { name = "Jennie You & Me", id = 15439356296,      cat = "kpop" },
+    { name = "Ice Cream",       id = 16181797368,      cat = "kpop" },
+    { name = "Kill This Love",  id = 16181798319,      cat = "kpop" },
+    { name = "Boombayah",       id = 16553164850,      cat = "kpop" },
+    { name = "DDU-DU",          id = 16553170471,      cat = "kpop" },
+    { name = "How You Like That",id = 16874470507,     cat = "kpop" },
+    { name = "Lovesick Girls",  id = 16874472321,      cat = "kpop" },
+    { name = "As If Your Last", id = 18855536648,      cat = "kpop" },
+    { name = "Lisa Money",      id = 15679623052,      cat = "kpop" },
+    { name = "Rose On Ground",  id = 15679624464,      cat = "kpop" },
+    { name = "TWICE The Feels", id = 12874447851,      cat = "kpop" },
+    { name = "TWICE What Is Love",id = 13327655243,    cat = "kpop" },
+    { name = "TWICE Fancy",     id = 13520524517,      cat = "kpop" },
+    { name = "TWICE Pop",       id = 13768941455,      cat = "kpop" },
+    { name = "TWICE LIKEY",     id = 14899979575,      cat = "kpop" },
+    { name = "TWICE Feel Special",id = 14899980745,    cat = "kpop" },
+    { name = "TWICE I Got You", id = 16215030041,      cat = "kpop" },
+    { name = "TWICE ABCD",      id = 18933706381,      cat = "kpop" },
+    { name = "TWICE Strategy",  id = 97311229290836,   cat = "kpop" },
+    { name = "TWICE Takedown",  id = 140182843839424,  cat = "kpop" },
+    { name = "NCT 2 Baddies",   id = 12259828678,      cat = "kpop" },
+    { name = "NCT Kick It",     id = 12259826609,      cat = "kpop" },
+    { name = "NCT Sticker",     id = 12259825026,      cat = "kpop" },
+    { name = "Stray Kids",      id = 125064469983655,  cat = "kpop" },
+    { name = "KATSEYE Touch",   id = 135876612109535,  cat = "kpop" },
+    { name = "Sunmi Gashina",   id = 9527886709,       cat = "kpop" },
+    { name = "Idol",            id = 4101966434,       cat = "kpop" },
 }
 
 local emoteTrack
@@ -482,16 +600,91 @@ local function playEmote(id)
     return true
 end
 
--- Copies appearance. Works by UserId too, even if the player already left.
+local function stopEmote()
+    if emoteTrack then
+        pcall(function() emoteTrack:Stop(0.15) end)
+        emoteTrack = nil
+    end
+    -- Re-trigger the default Animate script so the idle pose comes back.
+    local c = LP.Character
+    if c then
+        local animate = c:FindFirstChild("Animate")
+        if animate then
+            animate.Disabled = true
+            task.wait()
+            animate.Disabled = false
+        end
+    end
+    setStatus("emote stopped")
+end
+
+-- Fallback when ApplyDescription is blocked: copy the visible pieces directly.
+local function copyClothingPiecewise(targetChar, myChar)
+    local copied = 0
+
+    local function copyClass(cls, prop)
+        local src = targetChar:FindFirstChildOfClass(cls)
+        if not src then return end
+        local dst = myChar:FindFirstChildOfClass(cls)
+        if not dst then
+            local ok, created = pcall(function()
+                local n = Instance.new(cls)
+                n.Parent = myChar
+                return n
+            end)
+            if not ok or not created then return end
+            dst = created
+        end
+        pcall(function() dst[prop] = src[prop] end)
+        copied += 1
+    end
+
+    copyClass("Shirt", "ShirtTemplate")
+    copyClass("Pants", "PantsTemplate")
+
+    local srcColors = targetChar:FindFirstChildOfClass("BodyColors")
+    local dstColors = myChar:FindFirstChildOfClass("BodyColors")
+    if srcColors and dstColors then
+        for _, prop in ipairs({
+            "HeadColor3", "LeftArmColor3", "RightArmColor3",
+            "LeftLegColor3", "RightLegColor3", "TorsoColor3",
+        }) do
+            pcall(function() dstColors[prop] = srcColors[prop] end)
+        end
+        copied += 1
+    end
+
+    local myHum = myChar:FindFirstChildOfClass("Humanoid")
+    for _, acc in ipairs(targetChar:GetChildren()) do
+        if acc:IsA("Accessory") then
+            local existing = myChar:FindFirstChild(acc.Name)
+            if existing then existing:Destroy() end
+            local clone = acc:Clone()
+            local placed = false
+            if myHum and myHum.AddAccessory then
+                placed = pcall(function() myHum:AddAccessory(clone) end)
+            end
+            if not placed then
+                clone.Parent = myChar
+            end
+            copied += 1
+        end
+    end
+
+    return copied > 0
+end
+
+-- Copies appearance. Tries HumanoidDescription first, then piecewise clothing.
 local function copyOutfit(query)
-    local _, hum = getChar()
-    if not hum then return false, "no character" end
+    local myChar, hum = getChar()
+    if not hum then return false, "your character is not loaded" end
 
     local target, userId = resolveTarget(query)
-    local desc
+    local targetChar = target and (target.Character or findWorkspaceModel(target)) or nil
 
-    if target and target.Character then
-        local th = target.Character:FindFirstChildOfClass("Humanoid")
+    local desc
+    if targetChar then
+        local th = targetChar:FindFirstChildOfClass("Humanoid")
         if th then
             local ok, d = pcall(function() return th:GetAppliedDescription() end)
             if ok then desc = d end
@@ -505,11 +698,19 @@ local function copyOutfit(query)
         if ok then desc = d end
     end
 
-    if not desc then return false, "could not read description" end
+    if desc then
+        local ok = pcall(function() hum:ApplyDescription(desc) end)
+        if ok then return true, "description" end
+    end
 
-    local ok = pcall(function() hum:ApplyDescription(desc) end)
-    if not ok then return false, "ApplyDescription blocked by game" end
-    return true
+    if targetChar then
+        if copyClothingPiecewise(targetChar, myChar) then
+            return true, "clothing"
+        end
+        return false, "nothing copyable on target"
+    end
+
+    return false, "player not found and no description available"
 end
 
 -- ---------------------------------------------------------------- ui
@@ -525,8 +726,8 @@ screen.Parent = parent
 
 local main = Instance.new("Frame")
 main.Name = "Main"
-main.Size = UDim2.fromOffset(252, 384)
-main.Position = UDim2.new(0, 24, 0.5, -192)
+main.Size = UDim2.fromOffset(282, 470)
+main.Position = UDim2.new(0, 24, 0.5, -235)
 main.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
 main.BorderSizePixel = 0
 main.Active = true
@@ -708,13 +909,18 @@ local function tpToPlayer()
         return
     end
     local _, _, hrp = getChar()
-    local thrp = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-    if hrp and thrp then
-        hrp.CFrame = thrp.CFrame + Vector3.new(0, 0, 2)
-        setStatus("teleported to " .. target.Name)
-    else
-        notify("Target has no loaded character")
+    if not hrp then
+        notify("Your character is not loaded")
+        return
     end
+    local troot = resolveRoot(target, 2)
+    if not troot then
+        notify("No root for " .. target.Name)
+        setStatus(describeTarget(target))
+        return
+    end
+    hrp.CFrame = troot.CFrame + Vector3.new(0, 0, 2)
+    setStatus("teleported to " .. target.Name .. " (@" .. target.DisplayName .. ")")
 end
 
 goBtn.MouseButton1Click:Connect(tpToPlayer)
@@ -730,10 +936,14 @@ bringBtn.MouseButton1Click:Connect(function()
         return
     end
     local _, _, hrp = getChar()
-    local tchar = target.Character
-    local troot = tchar and tchar:FindFirstChild("HumanoidRootPart")
-    if not (hrp and troot) then
-        notify("Target has no loaded character")
+    if not hrp then
+        notify("Your character is not loaded")
+        return
+    end
+    local troot = resolveRoot(target, 2)
+    if not troot then
+        notify("No root for " .. target.Name)
+        setStatus(describeTarget(target))
         return
     end
     troot.CFrame = hrp.CFrame + Vector3.new(0, 0, 3)
@@ -773,6 +983,70 @@ local function flatButton(text, order, height)
     c.Parent = b
     return b
 end
+
+-- player list: click a name to fill the target box
+sectionLabel("PLAYERS", 98)
+
+local playerList = Instance.new("ScrollingFrame")
+playerList.Size = UDim2.new(1, -4, 0, 110)
+playerList.BackgroundColor3 = Color3.fromRGB(26, 26, 31)
+playerList.BorderSizePixel = 0
+playerList.ScrollBarThickness = 3
+playerList.CanvasSize = UDim2.new(0, 0, 0, 0)
+playerList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+playerList.LayoutOrder = 99
+playerList.Parent = list
+
+local plistCorner = Instance.new("UICorner")
+plistCorner.CornerRadius = UDim.new(0, 6)
+plistCorner.Parent = playerList
+
+local plistLayout = Instance.new("UIListLayout")
+plistLayout.Padding = UDim.new(0, 2)
+plistLayout.Parent = playerList
+
+local function refreshPlayerList()
+    for _, ch in ipairs(playerList:GetChildren()) do
+        if ch:IsA("TextButton") then ch:Destroy() end
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP then
+            local hasRoot = getTargetRoot(plr) ~= nil
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(1, -6, 0, 24)
+            b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+            b.Text = ("  %s  (@%s)%s"):format(plr.Name, plr.DisplayName, hasRoot and "" or "  [no char]")
+            b.TextColor3 = hasRoot and Color3.fromRGB(200, 220, 210) or Color3.fromRGB(150, 130, 130)
+            b.Font = Enum.Font.Gotham
+            b.TextSize = 11
+            b.TextXAlignment = Enum.TextXAlignment.Left
+            b.TextTruncate = Enum.TextTruncate.AtEnd
+            b.AutoButtonColor = false
+            b.BorderSizePixel = 0
+            b.Parent = playerList
+
+            local c = Instance.new("UICorner")
+            c.CornerRadius = UDim.new(0, 4)
+            c.Parent = b
+
+            b.MouseButton1Click:Connect(function()
+                tpBox.Text = plr.Name
+                setStatus("selected " .. plr.Name .. " (@" .. plr.DisplayName .. ")")
+            end)
+        end
+    end
+end
+
+refreshPlayerList()
+Players.PlayerAdded:Connect(function() task.delay(0.5, refreshPlayerList) end)
+Players.PlayerRemoving:Connect(function() task.delay(0.2, refreshPlayerList) end)
+
+task.spawn(function()
+    while true do
+        task.wait(6)
+        if main.Visible then refreshPlayerList() end
+    end
+end)
 
 sectionLabel("AVATAR", 101)
 
@@ -835,56 +1109,127 @@ resetBtn.MouseButton1Click:Connect(function()
     resetBtn.Text = "1x"
 end)
 
-local function addEmoteGrid(order, items)
-    local rows = math.ceil(#items / 3)
-    local height = rows * 28 + (rows - 1) * 4
+local emoteCat = "all"
 
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, -4, 0, height)
-    frame.BackgroundTransparency = 1
-    frame.BorderSizePixel = 0
-    frame.LayoutOrder = order
-    frame.Parent = list
+sectionLabel("EMOTES", 104)
 
-    local grid = Instance.new("UIGridLayout")
-    grid.CellSize = UDim2.new(1 / 3, -4, 0, 28)
-    grid.CellPadding = UDim2.new(0, 4, 0, 4)
-    grid.SortOrder = Enum.SortOrder.LayoutOrder
-    grid.Parent = frame
+local catRow = Instance.new("Frame")
+catRow.Size = UDim2.new(1, -4, 0, 26)
+catRow.BackgroundTransparency = 1
+catRow.BorderSizePixel = 0
+catRow.LayoutOrder = 105
+catRow.Parent = list
 
-    for i, e in ipairs(items) do
-        local b = Instance.new("TextButton")
-        b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
-        b.Text = e.name
-        b.TextColor3 = Color3.fromRGB(210, 210, 218)
-        b.Font = Enum.Font.Gotham
-        b.TextSize = 10
-        b.TextTruncate = Enum.TextTruncate.AtEnd
-        b.BorderSizePixel = 0
-        b.AutoButtonColor = false
-        b.LayoutOrder = i
-        b.Parent = frame
+local searchBox = Instance.new("TextBox")
+searchBox.Size = UDim2.new(1, -4, 0, 28)
+searchBox.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+searchBox.PlaceholderText = "search emote / lagu..."
+searchBox.Text = ""
+searchBox.TextColor3 = Color3.fromRGB(220, 220, 226)
+searchBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+searchBox.Font = Enum.Font.Gotham
+searchBox.TextSize = 12
+searchBox.BorderSizePixel = 0
+searchBox.ClearTextOnFocus = false
+searchBox.LayoutOrder = 106
+searchBox.Parent = list
 
-        local c = Instance.new("UICorner")
-        c.CornerRadius = UDim.new(0, 6)
-        c.Parent = b
+local searchCorner = Instance.new("UICorner")
+searchCorner.CornerRadius = UDim.new(0, 6)
+searchCorner.Parent = searchBox
 
-        b.MouseButton1Click:Connect(function()
-            local ok, err = playEmote(e.id)
-            if ok then
-                setStatus("emote: " .. e.name)
-            else
-                notify("Emote " .. e.name .. ": " .. tostring(err))
-            end
-        end)
+local results = Instance.new("ScrollingFrame")
+results.Size = UDim2.new(1, -4, 0, 150)
+results.BackgroundColor3 = Color3.fromRGB(26, 26, 31)
+results.BorderSizePixel = 0
+results.ScrollBarThickness = 3
+results.CanvasSize = UDim2.new(0, 0, 0, 0)
+results.AutomaticCanvasSize = Enum.AutomaticSize.Y
+results.LayoutOrder = 107
+results.Parent = list
+
+local resultsCorner = Instance.new("UICorner")
+resultsCorner.CornerRadius = UDim.new(0, 6)
+resultsCorner.Parent = results
+
+local resultsLayout = Instance.new("UIListLayout")
+resultsLayout.Padding = UDim.new(0, 2)
+resultsLayout.Parent = results
+
+local function renderEmotes()
+    for _, ch in ipairs(results:GetChildren()) do
+        if ch:IsA("TextButton") then ch:Destroy() end
+    end
+
+    local q = searchBox.Text:lower()
+    for _, e in ipairs(EMOTE_DB) do
+        local catOk = (emoteCat == "all") or (e.cat == emoteCat)
+        local nameOk = (q == "") or (e.name:lower():find(q, 1, true) ~= nil)
+        if catOk and nameOk then
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(1, -6, 0, 26)
+            b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+            b.Text = "  " .. e.name
+            b.TextColor3 = Color3.fromRGB(205, 205, 215)
+            b.Font = Enum.Font.Gotham
+            b.TextSize = 11
+            b.TextXAlignment = Enum.TextXAlignment.Left
+            b.AutoButtonColor = false
+            b.BorderSizePixel = 0
+            b.Parent = results
+
+            local c = Instance.new("UICorner")
+            c.CornerRadius = UDim.new(0, 4)
+            c.Parent = b
+
+            b.MouseButton1Click:Connect(function()
+                local ok, err = playEmote(e.id)
+                if ok then
+                    setStatus("emote: " .. e.name)
+                else
+                    notify("Emote " .. e.name .. ": " .. tostring(err))
+                end
+            end)
+        end
     end
 end
 
-sectionLabel("EMOTES", 104)
-addEmoteGrid(105, EMOTES)
+local catButtons = {}
+local CATS = {
+    { key = "all",   label = "All" },
+    { key = "dance", label = "Dance" },
+    { key = "kpop",  label = "K-pop" },
+    { key = "viral", label = "Viral" },
+}
 
-sectionLabel("VIRAL / NEW", 106)
-addEmoteGrid(107, VIRAL)
+local function styleCats()
+    for key, b in pairs(catButtons) do
+        local on = (key == emoteCat)
+        b.BackgroundColor3 = on and Color3.fromRGB(48, 110, 70) or Color3.fromRGB(34, 34, 40)
+        b.TextColor3 = on and Color3.fromRGB(200, 255, 210) or Color3.fromRGB(190, 190, 200)
+    end
+end
+
+for i, cat in ipairs(CATS) do
+    local b = smallBtn(cat.label, (i - 1) * 0.25, (i - 1) * 2, 0.25, -2, catRow)
+    b.TextSize = 11
+    catButtons[cat.key] = b
+    b.MouseButton1Click:Connect(function()
+        emoteCat = cat.key
+        styleCats()
+        renderEmotes()
+    end)
+end
+
+searchBox:GetPropertyChangedSignal("Text"):Connect(renderEmotes)
+
+local stopBtn = flatButton("Stop emote", 108, 28)
+stopBtn.BackgroundColor3 = Color3.fromRGB(74, 44, 44)
+stopBtn.TextXAlignment = Enum.TextXAlignment.Center
+stopBtn.MouseButton1Click:Connect(stopEmote)
+
+styleCats()
+renderEmotes()
 
 -- drag
 local dragging, dragStart, startPos
