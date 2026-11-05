@@ -63,6 +63,22 @@ local function notify(text)
     end)
 end
 
+local statusLabel
+local function setStatus(text)
+    if statusLabel then statusLabel.Text = text end
+    warn("[Utility] " .. text)
+end
+
+local function findPlayer(name)
+    if not name or name == "" then return nil end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP and plr.Name:lower():sub(1, #name) == name:lower() then
+            return plr
+        end
+    end
+    return nil
+end
+
 -- ---------------------------------------------------------------- fly
 
 local flyConn, flyBV, flyBG
@@ -118,29 +134,98 @@ end
 -- ---------------------------------------------------------------- noclip
 
 local noclipConn
+local noclipSaved = {}
+local noclipHook
 
-local function noclipOff()
-    state.noclip = false
-    if noclipConn then noclipConn:Disconnect(); noclipConn = nil end
+local function noclipSweep()
     local c = LP.Character
-    if c then
-        for _, p in ipairs(c:GetDescendants()) do
-            if p:IsA("BasePart") then p.CanCollide = true end
+    if not c then return end
+    for _, p in ipairs(c:GetDescendants()) do
+        if p:IsA("BasePart") and p.CanCollide then
+            p.CanCollide = false
         end
     end
 end
 
+-- last resort for games that re-enable CanCollide every frame
+local function installCanCollideHook()
+    if noclipHook then return end
+    local ok, mt = pcall(getrawmetatable, game)
+    if not ok or type(mt) ~= "table" then
+        setStatus("noclip: game resets collision and hook is unavailable")
+        return
+    end
+    local prev = mt.__newindex
+    pcall(setreadonly, mt, false)
+    mt.__newindex = function(t, k, v)
+        if state.noclip and k == "CanCollide" and typeof(t) == "Instance" and t:IsA("BasePart") then
+            local c = LP.Character
+            if c and t:IsDescendantOf(c) then v = false end
+        end
+        if prev then
+            return prev(t, k, v)
+        end
+    end
+    pcall(setreadonly, mt, true)
+    noclipHook = { mt = mt, prev = prev }
+    setStatus("noclip: forced via CanCollide hook")
+end
+
+local function removeCanCollideHook()
+    if not noclipHook then return end
+    pcall(setreadonly, noclipHook.mt, false)
+    noclipHook.mt.__newindex = noclipHook.prev
+    pcall(setreadonly, noclipHook.mt, true)
+    noclipHook = nil
+end
+
+local function noclipOff()
+    state.noclip = false
+    if noclipConn then noclipConn:Disconnect(); noclipConn = nil end
+    removeCanCollideHook()
+    for part, wasColliding in pairs(noclipSaved) do
+        if part and part.Parent then
+            pcall(function() part.CanCollide = wasColliding end)
+        end
+    end
+    noclipSaved = {}
+end
+
 local function noclipOn()
-    if not LP.Character then return false end
+    local c = LP.Character
+    if not c then return false end
+
     state.noclip = true
+    noclipSaved = {}
+    for _, p in ipairs(c:GetDescendants()) do
+        if p:IsA("BasePart") then
+            noclipSaved[p] = p.CanCollide
+            p.CanCollide = false
+        end
+    end
+
     if noclipConn then noclipConn:Disconnect() end
-    noclipConn = RunService.Stepped:Connect(function()
-        local c = LP.Character
-        if not c then return end
-        for _, p in ipairs(c:GetDescendants()) do
-            if p:IsA("BasePart") and p.CanCollide then p.CanCollide = false end
+    noclipConn = RunService.Stepped:Connect(noclipSweep)
+
+    task.delay(1, function()
+        if not state.noclip then return end
+        local cc = LP.Character
+        if not cc then return end
+        local total, colliding = 0, 0
+        for _, p in ipairs(cc:GetDescendants()) do
+            if p:IsA("BasePart") then
+                total += 1
+                if p.CanCollide then colliding += 1 end
+            end
+        end
+        if colliding > 0 then
+            setStatus(("noclip: %d/%d still colliding - escalating"):format(colliding, total))
+            installCanCollideHook()
+        else
+            setStatus(("noclip: active on %d parts"):format(total))
         end
     end)
+
     return true
 end
 
@@ -359,6 +444,18 @@ layout.Padding = UDim.new(0, 6)
 layout.SortOrder = Enum.SortOrder.LayoutOrder
 layout.Parent = list
 
+statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -16, 0, 22)
+statusLabel.Position = UDim2.new(0, 8, 1, -26)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = "ready"
+statusLabel.TextColor3 = Color3.fromRGB(130, 130, 140)
+statusLabel.Font = Enum.Font.Gotham
+statusLabel.TextSize = 11
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+statusLabel.Parent = main
+
 local rows = {}
 
 local function refreshRows()
@@ -398,19 +495,29 @@ for i, feat in ipairs(featureList) do
     rc.Parent = row
 
     row.MouseButton1Click:Connect(function()
-        local ok = pcall(setFeature, feat.key, not state[feat.key])
-        if not ok then notify(feat.label .. " unavailable in this game") end
+        local ok, res = pcall(setFeature, feat.key, not state[feat.key])
+        if not ok or res == false then
+            notify(feat.label .. " unavailable in this game")
+            setStatus(feat.label .. ": failed - no character or blocked by game")
+        end
         refreshRows()
     end)
 
     rows[feat.key] = row
 end
 
--- teleport-to-player box
+-- teleport / bring section
+local tpRow = Instance.new("Frame")
+tpRow.Size = UDim2.new(1, -4, 0, 64)
+tpRow.BackgroundTransparency = 1
+tpRow.BorderSizePixel = 0
+tpRow.LayoutOrder = 100
+tpRow.Parent = list
+
 local tpBox = Instance.new("TextBox")
-tpBox.Size = UDim2.new(1, -4, 0, 30)
+tpBox.Size = UDim2.new(1, 0, 0, 28)
 tpBox.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
-tpBox.PlaceholderText = "Player name -> Enter to teleport"
+tpBox.PlaceholderText = "player name"
 tpBox.Text = ""
 tpBox.TextColor3 = Color3.fromRGB(220, 220, 226)
 tpBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
@@ -418,39 +525,70 @@ tpBox.Font = Enum.Font.Gotham
 tpBox.TextSize = 12
 tpBox.BorderSizePixel = 0
 tpBox.ClearTextOnFocus = false
-tpBox.LayoutOrder = 100
-tpBox.Parent = list
+tpBox.Parent = tpRow
 
 local tpCorner = Instance.new("UICorner")
 tpCorner.CornerRadius = UDim.new(0, 6)
 tpCorner.Parent = tpBox
 
-tpBox.FocusLost:Connect(function(enterPressed)
-    if not enterPressed then return end
-    local name = tpBox.Text
-    if name == "" then return end
+local function actionButton(text, position, color)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0.5, -3, 0, 28)
+    b.Position = position
+    b.BackgroundColor3 = color
+    b.Text = text
+    b.TextColor3 = Color3.fromRGB(225, 225, 230)
+    b.Font = Enum.Font.GothamMedium
+    b.TextSize = 12
+    b.BorderSizePixel = 0
+    b.AutoButtonColor = false
+    b.Parent = tpRow
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = b
+    return b
+end
 
-    local target
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LP and plr.Name:lower():sub(1, #name) == name:lower() then
-            target = plr
-            break
-        end
-    end
+local goBtn    = actionButton("TP to",     UDim2.new(0, 0, 0, 32),   Color3.fromRGB(38, 70, 55))
+local bringBtn = actionButton("Bring here", UDim2.new(0.5, 3, 0, 32), Color3.fromRGB(74, 44, 44))
+
+local function tpToPlayer()
+    local target = findPlayer(tpBox.Text)
     if not target then
-        notify("No player matching: " .. name)
+        notify("No player matching: " .. tpBox.Text)
         return
     end
-
     local _, _, hrp = getChar()
-    local tchar = target.Character
-    local thrp = tchar and tchar:FindFirstChild("HumanoidRootPart")
+    local thrp = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
     if hrp and thrp then
         hrp.CFrame = thrp.CFrame + Vector3.new(0, 0, 2)
-        notify("Teleported to " .. target.Name)
+        setStatus("teleported to " .. target.Name)
     else
         notify("Target has no loaded character")
     end
+end
+
+goBtn.MouseButton1Click:Connect(tpToPlayer)
+
+tpBox.FocusLost:Connect(function(enterPressed)
+    if enterPressed then tpToPlayer() end
+end)
+
+bringBtn.MouseButton1Click:Connect(function()
+    local target = findPlayer(tpBox.Text)
+    if not target then
+        notify("No player matching: " .. tpBox.Text)
+        return
+    end
+    local _, _, hrp = getChar()
+    local tchar = target.Character
+    local troot = tchar and tchar:FindFirstChild("HumanoidRootPart")
+    if not (hrp and troot) then
+        notify("Target has no loaded character")
+        return
+    end
+    troot.CFrame = hrp.CFrame + Vector3.new(0, 0, 3)
+    setStatus("bring attempt on " .. target.Name .. " - server may snap back")
 end)
 
 -- drag
