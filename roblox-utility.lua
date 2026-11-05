@@ -1,5 +1,5 @@
 --[[
-    Universal Client Utility — clean rebuild of the one-liner loader pattern
+    Universal Client Utility â€” clean rebuild of the one-liner loader pattern
     ------------------------------------------------------------------------
     Executor required. Two ways to run:
 
@@ -29,17 +29,20 @@ local StarterGui  = game:GetService("StarterGui")
 local LP   = Players.LocalPlayer
 local genv = getgenv()
 
+local flySpeed = 55
+local walkSpeedValue = 16
+local walkSpeedTouched = false
+
 -- ---------------------------------------------------------------- state
 
 local state = {
-    fly     = false,
-    noclip  = false,
-    esp     = false,
-    speed   = false,
-    jump    = false,
-    infJump = false,
-    clickTP = false,
-    uiOpen  = true,
+    fly       = false,
+    noclip    = false,
+    esp       = false,
+    invisible = false,
+    infJump   = false,
+    clickTP   = false,
+    uiOpen    = true,
 }
 
 -- ---------------------------------------------------------------- helpers
@@ -200,7 +203,7 @@ local function flyOn()
         if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.yAxis end
         if dir.Magnitude > 0 then dir = dir.Unit end
 
-        flyBV.Velocity = dir * 55
+        flyBV.Velocity = dir * flySpeed
         flyBG.CFrame = cam.CFrame
     end)
 
@@ -323,6 +326,43 @@ local function noclipOn()
     return true
 end
 
+-- ---------------------------------------------------------------- invisible
+-- Client-side only: hides your character on your screen, not for other players.
+
+local invisConn
+
+local function invisibleSweep()
+    local c = LP.Character
+    if not c then return end
+    for _, p in ipairs(c:GetDescendants()) do
+        if p:IsA("BasePart") then
+            p.LocalTransparencyModifier = 1
+        end
+    end
+end
+
+local function invisibleOff()
+    state.invisible = false
+    if invisConn then invisConn:Disconnect(); invisConn = nil end
+    local c = LP.Character
+    if c then
+        for _, p in ipairs(c:GetDescendants()) do
+            if p:IsA("BasePart") then
+                p.LocalTransparencyModifier = 0
+            end
+        end
+    end
+end
+
+local function invisibleOn()
+    if not LP.Character then return false end
+    state.invisible = true
+    if invisConn then invisConn:Disconnect() end
+    invisConn = RunService.Stepped:Connect(invisibleSweep)
+    invisibleSweep()
+    return true
+end
+
 -- ---------------------------------------------------------------- esp
 
 local espCache = {}
@@ -419,18 +459,9 @@ local function setFeature(key, on)
         if on then return espOn() end
         espOff()
         return true
-    elseif key == "speed" then
-        local _, hum = getChar()
-        if not hum then return false end
-        state.speed = on
-        hum.WalkSpeed = on and 96 or 16
-        return true
-    elseif key == "jump" then
-        local _, hum = getChar()
-        if not hum then return false end
-        state.jump = on
-        hum.UseJumpPower = true
-        hum.JumpPower = on and 100 or 50
+    elseif key == "invisible" then
+        if on then return invisibleOn() end
+        invisibleOff()
         return true
     elseif key == "infJump" then
         state.infJump = on
@@ -447,20 +478,16 @@ LP.CharacterAdded:Connect(function()
     task.wait(0.6)
     if state.fly then flyOff(); flyOn() end
     local _, hum = getChar()
-    if hum then
-        if state.speed then hum.WalkSpeed = 96 end
-        if state.jump then
-            hum.UseJumpPower = true
-            hum.JumpPower = 100
-        end
-    end
+    if hum and walkSpeedTouched then hum.WalkSpeed = walkSpeedValue end
     if state.noclip then noclipOn() end
+    if state.invisible then invisibleOn() end
 end)
 
 -- ---------------------------------------------------------------- avatar tools
 
-local SCALES = { 0.4, 0.6, 0.8, 1, 1.4, 2, 3, 5 }
-local scaleIndex = 4
+local SCALES = { 0.1, 0.2, 0.3, 0.4, 0.6, 0.8, 1, 1.4, 2, 3, 5, 8, 12, 20 }
+local SCALE_RESET_INDEX = 7
+local scaleIndex = SCALE_RESET_INDEX
 
 local function applyScale()
     local c, hum = getChar()
@@ -726,8 +753,8 @@ screen.Parent = parent
 
 local main = Instance.new("Frame")
 main.Name = "Main"
-main.Size = UDim2.fromOffset(282, 470)
-main.Position = UDim2.new(0, 24, 0.5, -235)
+main.Size = UDim2.fromOffset(300, 500)
+main.Position = UDim2.new(0, 24, 0.5, -250)
 main.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
 main.BorderSizePixel = 0
 main.Active = true
@@ -778,21 +805,232 @@ local hideCorner = Instance.new("UICorner")
 hideCorner.CornerRadius = UDim.new(0, 6)
 hideCorner.Parent = hide
 
-local list = Instance.new("ScrollingFrame")
-list.Size = UDim2.new(1, -16, 1, -80)
-list.Position = UDim2.fromOffset(8, 44)
-list.BackgroundTransparency = 1
-list.BorderSizePixel = 0
-list.ScrollBarThickness = 3
-list.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 90)
-list.CanvasSize = UDim2.new(0, 0, 0, 0)
-list.AutomaticCanvasSize = Enum.AutomaticSize.Y
-list.Parent = main
+-- ---------------------------------------------------------------- ui helpers
 
-local layout = Instance.new("UIListLayout")
-layout.Padding = UDim.new(0, 6)
-layout.SortOrder = Enum.SortOrder.LayoutOrder
-layout.Parent = list
+local function sectionLabel(parentFrame, text, order)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -4, 0, 18)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = text
+    lbl.TextColor3 = Color3.fromRGB(120, 120, 132)
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = 10
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.LayoutOrder = order
+    lbl.Parent = parentFrame
+    return lbl
+end
+
+local function flatButton(parentFrame, text, order, height)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, -4, 0, height or 30)
+    b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    b.Text = "  " .. text
+    b.TextColor3 = Color3.fromRGB(200, 200, 208)
+    b.Font = Enum.Font.Gotham
+    b.TextSize = 12
+    b.TextXAlignment = Enum.TextXAlignment.Left
+    b.AutoButtonColor = false
+    b.BorderSizePixel = 0
+    b.LayoutOrder = order
+    b.Parent = parentFrame
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = b
+    return b
+end
+
+local function smallBtn(parentFrame, text, xScale, xOffset, widthScale, widthOffset)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(widthScale, widthOffset, 1, 0)
+    b.Position = UDim2.new(xScale, xOffset, 0, 0)
+    b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    b.Text = text
+    b.TextColor3 = Color3.fromRGB(210, 210, 218)
+    b.Font = Enum.Font.Gotham
+    b.TextSize = 12
+    b.BorderSizePixel = 0
+    b.AutoButtonColor = false
+    b.Parent = parentFrame
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = b
+    return b
+end
+
+local function makeSlider(parentFrame, order, label, min, max, default, step, onChanged)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, -4, 0, 44)
+    row.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    row.BorderSizePixel = 0
+    row.LayoutOrder = order
+    row.Parent = parentFrame
+
+    local rc = Instance.new("UICorner")
+    rc.CornerRadius = UDim.new(0, 6)
+    rc.Parent = row
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -16, 0, 16)
+    lbl.Position = UDim2.fromOffset(8, 4)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = label .. ": " .. tostring(default)
+    lbl.TextColor3 = Color3.fromRGB(200, 200, 208)
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextSize = 12
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = row
+
+    local track = Instance.new("Frame")
+    track.Size = UDim2.new(1, -16, 0, 8)
+    track.Position = UDim2.new(0, 8, 1, -14)
+    track.BackgroundColor3 = Color3.fromRGB(55, 55, 65)
+    track.BorderSizePixel = 0
+    track.Active = true
+    track.Parent = row
+
+    local tc = Instance.new("UICorner")
+    tc.CornerRadius = UDim.new(1, 0)
+    tc.Parent = track
+
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new(0, 0, 1, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(70, 160, 100)
+    fill.BorderSizePixel = 0
+    fill.Parent = track
+
+    local fc = Instance.new("UICorner")
+    fc.CornerRadius = UDim.new(1, 0)
+    fc.Parent = fill
+
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.fromOffset(14, 14)
+    knob.AnchorPoint = Vector2.new(0.5, 0.5)
+    knob.Position = UDim2.new(0, 0, 0.5, 0)
+    knob.BackgroundColor3 = Color3.fromRGB(220, 220, 230)
+    knob.BorderSizePixel = 0
+    knob.ZIndex = 2
+    knob.Parent = track
+
+    local kc = Instance.new("UICorner")
+    kc.CornerRadius = UDim.new(1, 0)
+    kc.Parent = knob
+
+    local dragging = false
+
+    local function apply(alpha, silent)
+        alpha = math.clamp(alpha, 0, 1)
+        local raw = min + (max - min) * alpha
+        local value = math.floor(raw / step + 0.5) * step
+        if value < min then value = min end
+        if value > max then value = max end
+        local a = (value - min) / (max - min)
+        fill.Size = UDim2.new(a, 0, 1, 0)
+        knob.Position = UDim2.new(a, 0, 0.5, 0)
+        lbl.Text = label .. ": " .. tostring(value)
+        if not silent then onChanged(value) end
+        return value
+    end
+
+    local function fromX(px)
+        local abs = track.AbsolutePosition.X
+        local size = track.AbsoluteSize.X
+        if size <= 0 then return end
+        apply((px - abs) / size)
+    end
+
+    track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            fromX(input.Position.X)
+        end
+    end)
+
+    UIS.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+            fromX(input.Position.X)
+        end
+    end)
+
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+
+    apply((default - min) / (max - min), true)
+
+    return {
+        set = function(v) apply((v - min) / (max - min)) end,
+    }
+end
+
+-- ---------------------------------------------------------------- tabs
+
+local pages = {}
+local tabButtons = {}
+local activeTab = "main"
+local refreshPlayerList
+
+local function selectTab(key)
+    activeTab = key
+    for k, page in pairs(pages) do
+        page.Visible = (k == key)
+    end
+    for k, b in pairs(tabButtons) do
+        local on = (k == key)
+        b.BackgroundColor3 = on and Color3.fromRGB(48, 110, 70) or Color3.fromRGB(30, 30, 36)
+        b.TextColor3 = on and Color3.fromRGB(200, 255, 210) or Color3.fromRGB(170, 170, 180)
+    end
+    if key == "player" and refreshPlayerList then
+        refreshPlayerList()
+    end
+end
+
+local tabBar = Instance.new("Frame")
+tabBar.Size = UDim2.new(1, -16, 0, 28)
+tabBar.Position = UDim2.fromOffset(8, 42)
+tabBar.BackgroundTransparency = 1
+tabBar.BorderSizePixel = 0
+tabBar.Parent = main
+
+local tabDefs = {
+    { key = "main",   label = "Main" },
+    { key = "player", label = "Player" },
+    { key = "avatar", label = "Avatar" },
+    { key = "emote",  label = "Emote" },
+}
+
+for i, t in ipairs(tabDefs) do
+    local b = smallBtn(tabBar, t.label, (i - 1) * 0.25, (i - 1) * 2, 0.25, -2)
+    b.TextSize = 11
+    b.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+    tabButtons[t.key] = b
+    b.MouseButton1Click:Connect(function() selectTab(t.key) end)
+
+    local page = Instance.new("ScrollingFrame")
+    page.Size = UDim2.new(1, -16, 1, -110)
+    page.Position = UDim2.fromOffset(8, 76)
+    page.BackgroundTransparency = 1
+    page.BorderSizePixel = 0
+    page.ScrollBarThickness = 3
+    page.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 90)
+    page.CanvasSize = UDim2.new(0, 0, 0, 0)
+    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    page.Visible = false
+    page.Parent = main
+
+    local l = Instance.new("UIListLayout")
+    l.Padding = UDim.new(0, 6)
+    l.SortOrder = Enum.SortOrder.LayoutOrder
+    l.Parent = page
+
+    pages[t.key] = page
+end
 
 statusLabel = Instance.new("TextLabel")
 statusLabel.Size = UDim2.new(1, -16, 0, 22)
@@ -806,6 +1044,13 @@ statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
 statusLabel.Parent = main
 
+local pageMain = pages["main"]
+local pagePlayer = pages["player"]
+local pageAvatar = pages["avatar"]
+local pageEmote = pages["emote"]
+
+-- ---------------------------------------------------------------- main tab
+
 local rows = {}
 
 local function refreshRows()
@@ -817,13 +1062,12 @@ local function refreshRows()
 end
 
 local featureList = {
-    { key = "fly",     label = "Fly  (WASD / Space / Ctrl)" },
-    { key = "noclip",  label = "Noclip" },
-    { key = "esp",     label = "Player ESP" },
-    { key = "speed",   label = "Speed x6" },
-    { key = "jump",    label = "Jump x2" },
-    { key = "infJump", label = "Infinite Jump" },
-    { key = "clickTP", label = "Click Teleport" },
+    { key = "fly",       label = "Fly  (WASD / Space / Ctrl)" },
+    { key = "noclip",    label = "Noclip" },
+    { key = "esp",       label = "Player ESP" },
+    { key = "invisible", label = "Invisible (client-side)" },
+    { key = "infJump",   label = "Infinite Jump" },
+    { key = "clickTP",   label = "Click Teleport" },
 }
 
 for i, feat in ipairs(featureList) do
@@ -838,7 +1082,7 @@ for i, feat in ipairs(featureList) do
     row.TextXAlignment = Enum.TextXAlignment.Left
     row.AutoButtonColor = false
     row.LayoutOrder = i
-    row.Parent = list
+    row.Parent = pageMain
 
     local rc = Instance.new("UICorner")
     rc.CornerRadius = UDim.new(0, 6)
@@ -856,18 +1100,34 @@ for i, feat in ipairs(featureList) do
     rows[feat.key] = row
 end
 
--- teleport / bring section
+sectionLabel(pageMain, "SPEED", 50)
+
+makeSlider(pageMain, 51, "Walk speed", 16, 500, 16, 1, function(v)
+    walkSpeedValue = v
+    walkSpeedTouched = true
+    local _, hum = getChar()
+    if hum then hum.WalkSpeed = v end
+end)
+
+makeSlider(pageMain, 52, "Fly speed", 10, 300, 55, 1, function(v)
+    flySpeed = v
+end)
+
+-- ---------------------------------------------------------------- player tab
+
+sectionLabel(pagePlayer, "TARGET", 1)
+
 local tpRow = Instance.new("Frame")
 tpRow.Size = UDim2.new(1, -4, 0, 64)
 tpRow.BackgroundTransparency = 1
 tpRow.BorderSizePixel = 0
-tpRow.LayoutOrder = 100
-tpRow.Parent = list
+tpRow.LayoutOrder = 2
+tpRow.Parent = pagePlayer
 
 local tpBox = Instance.new("TextBox")
 tpBox.Size = UDim2.new(1, 0, 0, 28)
 tpBox.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
-tpBox.PlaceholderText = "player name"
+tpBox.PlaceholderText = "username / display name / UserId"
 tpBox.Text = ""
 tpBox.TextColor3 = Color3.fromRGB(220, 220, 226)
 tpBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
@@ -881,7 +1141,7 @@ local tpCorner = Instance.new("UICorner")
 tpCorner.CornerRadius = UDim.new(0, 6)
 tpCorner.Parent = tpBox
 
-local function actionButton(text, position, color)
+local function actionButton(parentFrame, text, position, color)
     local b = Instance.new("TextButton")
     b.Size = UDim2.new(0.5, -3, 0, 28)
     b.Position = position
@@ -892,15 +1152,15 @@ local function actionButton(text, position, color)
     b.TextSize = 12
     b.BorderSizePixel = 0
     b.AutoButtonColor = false
-    b.Parent = tpRow
+    b.Parent = parentFrame
     local c = Instance.new("UICorner")
     c.CornerRadius = UDim.new(0, 6)
     c.Parent = b
     return b
 end
 
-local goBtn    = actionButton("TP to",     UDim2.new(0, 0, 0, 32),   Color3.fromRGB(38, 70, 55))
-local bringBtn = actionButton("Bring here", UDim2.new(0.5, 3, 0, 32), Color3.fromRGB(74, 44, 44))
+local goBtn    = actionButton(tpRow, "TP to",     UDim2.new(0, 0, 0, 32),   Color3.fromRGB(38, 70, 55))
+local bringBtn = actionButton(tpRow, "Bring here", UDim2.new(0.5, 3, 0, 32), Color3.fromRGB(74, 44, 44))
 
 local function tpToPlayer()
     local target = findPlayer(tpBox.Text)
@@ -924,7 +1184,6 @@ local function tpToPlayer()
 end
 
 goBtn.MouseButton1Click:Connect(tpToPlayer)
-
 tpBox.FocusLost:Connect(function(enterPressed)
     if enterPressed then tpToPlayer() end
 end)
@@ -950,52 +1209,35 @@ bringBtn.MouseButton1Click:Connect(function()
     setStatus("bring attempt on " .. target.Name .. " - server may snap back")
 end)
 
--- avatar section
-local function sectionLabel(text, order)
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -4, 0, 18)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = text
-    lbl.TextColor3 = Color3.fromRGB(120, 120, 132)
-    lbl.Font = Enum.Font.GothamBold
-    lbl.TextSize = 10
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.LayoutOrder = order
-    lbl.Parent = list
-    return lbl
-end
+sectionLabel(pagePlayer, "PLAYERS (auto-refresh 6s)", 10)
 
-local function flatButton(text, order, height)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(1, -4, 0, height or 30)
-    b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
-    b.Text = "  " .. text
-    b.TextColor3 = Color3.fromRGB(200, 200, 208)
-    b.Font = Enum.Font.Gotham
-    b.TextSize = 12
-    b.TextXAlignment = Enum.TextXAlignment.Left
-    b.AutoButtonColor = false
-    b.BorderSizePixel = 0
-    b.LayoutOrder = order
-    b.Parent = list
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, 6)
-    c.Parent = b
-    return b
-end
+local playerSearch = Instance.new("TextBox")
+playerSearch.Size = UDim2.new(1, -4, 0, 28)
+playerSearch.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+playerSearch.PlaceholderText = "search player..."
+playerSearch.Text = ""
+playerSearch.TextColor3 = Color3.fromRGB(220, 220, 226)
+playerSearch.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+playerSearch.Font = Enum.Font.Gotham
+playerSearch.TextSize = 12
+playerSearch.BorderSizePixel = 0
+playerSearch.ClearTextOnFocus = false
+playerSearch.LayoutOrder = 11
+playerSearch.Parent = pagePlayer
 
--- player list: click a name to fill the target box
-sectionLabel("PLAYERS", 98)
+local psCorner = Instance.new("UICorner")
+psCorner.CornerRadius = UDim.new(0, 6)
+psCorner.Parent = playerSearch
 
 local playerList = Instance.new("ScrollingFrame")
-playerList.Size = UDim2.new(1, -4, 0, 110)
+playerList.Size = UDim2.new(1, -4, 0, 240)
 playerList.BackgroundColor3 = Color3.fromRGB(26, 26, 31)
 playerList.BorderSizePixel = 0
 playerList.ScrollBarThickness = 3
 playerList.CanvasSize = UDim2.new(0, 0, 0, 0)
 playerList.AutomaticCanvasSize = Enum.AutomaticSize.Y
-playerList.LayoutOrder = 99
-playerList.Parent = list
+playerList.LayoutOrder = 12
+playerList.Parent = pagePlayer
 
 local plistCorner = Instance.new("UICorner")
 plistCorner.CornerRadius = UDim.new(0, 6)
@@ -1005,37 +1247,62 @@ local plistLayout = Instance.new("UIListLayout")
 plistLayout.Padding = UDim.new(0, 2)
 plistLayout.Parent = playerList
 
-local function refreshPlayerList()
+refreshPlayerList = function()
     for _, ch in ipairs(playerList:GetChildren()) do
         if ch:IsA("TextButton") then ch:Destroy() end
     end
+
+    local q = playerSearch.Text:lower()
+    local count = 0
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LP then
-            local hasRoot = getTargetRoot(plr) ~= nil
-            local b = Instance.new("TextButton")
-            b.Size = UDim2.new(1, -6, 0, 24)
-            b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
-            b.Text = ("  %s  (@%s)%s"):format(plr.Name, plr.DisplayName, hasRoot and "" or "  [no char]")
-            b.TextColor3 = hasRoot and Color3.fromRGB(200, 220, 210) or Color3.fromRGB(150, 130, 130)
-            b.Font = Enum.Font.Gotham
-            b.TextSize = 11
-            b.TextXAlignment = Enum.TextXAlignment.Left
-            b.TextTruncate = Enum.TextTruncate.AtEnd
-            b.AutoButtonColor = false
-            b.BorderSizePixel = 0
-            b.Parent = playerList
+            local matches = (q == "")
+                or plr.Name:lower():find(q, 1, true)
+                or plr.DisplayName:lower():find(q, 1, true)
+            if matches then
+                count += 1
+                local hasRoot = getTargetRoot(plr) ~= nil
+                local b = Instance.new("TextButton")
+                b.Size = UDim2.new(1, -6, 0, 26)
+                b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+                b.Text = ("  %s  (@%s)%s"):format(plr.Name, plr.DisplayName, hasRoot and "" or "  [no char]")
+                b.TextColor3 = hasRoot and Color3.fromRGB(200, 220, 210) or Color3.fromRGB(150, 130, 130)
+                b.Font = Enum.Font.Gotham
+                b.TextSize = 11
+                b.TextXAlignment = Enum.TextXAlignment.Left
+                b.TextTruncate = Enum.TextTruncate.AtEnd
+                b.AutoButtonColor = false
+                b.BorderSizePixel = 0
+                b.Parent = playerList
 
-            local c = Instance.new("UICorner")
-            c.CornerRadius = UDim.new(0, 4)
-            c.Parent = b
+                local c = Instance.new("UICorner")
+                c.CornerRadius = UDim.new(0, 4)
+                c.Parent = b
 
-            b.MouseButton1Click:Connect(function()
-                tpBox.Text = plr.Name
-                setStatus("selected " .. plr.Name .. " (@" .. plr.DisplayName .. ")")
-            end)
+                b.MouseButton1Click:Connect(function()
+                    tpBox.Text = plr.Name
+                    setStatus("selected " .. plr.Name .. " (@" .. plr.DisplayName .. ")")
+                end)
+            end
         end
     end
+
+    if count == 0 then
+        local b = Instance.new("TextLabel")
+        b.Size = UDim2.new(1, -6, 0, 26)
+        b.BackgroundTransparency = 1
+        b.Text = "  no players match"
+        b.TextColor3 = Color3.fromRGB(120, 120, 130)
+        b.Font = Enum.Font.Gotham
+        b.TextSize = 11
+        b.TextXAlignment = Enum.TextXAlignment.Left
+        b.Parent = playerList
+    end
 end
+
+playerSearch:GetPropertyChangedSignal("Text"):Connect(function()
+    refreshPlayerList()
+end)
 
 refreshPlayerList()
 Players.PlayerAdded:Connect(function() task.delay(0.5, refreshPlayerList) end)
@@ -1044,81 +1311,97 @@ Players.PlayerRemoving:Connect(function() task.delay(0.2, refreshPlayerList) end
 task.spawn(function()
     while true do
         task.wait(6)
-        if main.Visible then refreshPlayerList() end
+        if main.Visible and activeTab == "player" then
+            refreshPlayerList()
+        end
     end
 end)
 
-sectionLabel("AVATAR", 101)
+-- ---------------------------------------------------------------- avatar tab
 
-local copyBtn = flatButton("Copy outfit (name / UserId above)", 102)
+sectionLabel(pageAvatar, "COPY OUTFIT", 1)
+
+local copyBox = Instance.new("TextBox")
+copyBox.Size = UDim2.new(1, -4, 0, 28)
+copyBox.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+copyBox.PlaceholderText = "name / UserId (empty = Player tab target)"
+copyBox.Text = ""
+copyBox.TextColor3 = Color3.fromRGB(220, 220, 226)
+copyBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+copyBox.Font = Enum.Font.Gotham
+copyBox.TextSize = 12
+copyBox.BorderSizePixel = 0
+copyBox.ClearTextOnFocus = false
+copyBox.LayoutOrder = 2
+copyBox.Parent = pageAvatar
+
+local cbCorner = Instance.new("UICorner")
+cbCorner.CornerRadius = UDim.new(0, 6)
+cbCorner.Parent = copyBox
+
+local copyBtn = flatButton(pageAvatar, "Copy outfit now", 3)
 copyBtn.MouseButton1Click:Connect(function()
-    local ok, err = copyOutfit(tpBox.Text)
+    local query = copyBox.Text
+    if query == "" then query = tpBox.Text end
+    local ok, err = copyOutfit(query)
     if ok then
-        setStatus("outfit copied from " .. tpBox.Text)
+        setStatus("outfit copied from " .. query .. " (" .. tostring(err) .. ")")
     else
         notify("Copy outfit: " .. tostring(err))
     end
 end)
 
+sectionLabel(pageAvatar, "SIZE", 4)
+
 local sizeRow = Instance.new("Frame")
 sizeRow.Size = UDim2.new(1, -4, 0, 28)
 sizeRow.BackgroundTransparency = 1
 sizeRow.BorderSizePixel = 0
-sizeRow.LayoutOrder = 103
-sizeRow.Parent = list
+sizeRow.LayoutOrder = 5
+sizeRow.Parent = pageAvatar
 
-local function smallBtn(text, xScale, xOffset, widthScale, widthOffset, parent)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(widthScale, widthOffset, 1, 0)
-    b.Position = UDim2.new(xScale, xOffset, 0, 0)
-    b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
-    b.Text = text
-    b.TextColor3 = Color3.fromRGB(210, 210, 218)
-    b.Font = Enum.Font.Gotham
-    b.TextSize = 12
-    b.BorderSizePixel = 0
-    b.AutoButtonColor = false
-    b.Parent = parent
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, 6)
-    c.Parent = b
-    return b
+local minusBtn = smallBtn(sizeRow, "Size -", 0, 0, 0.33, -2)
+local resetBtn = smallBtn(sizeRow, "1x", 0.33, 1, 0.34, -2)
+local plusBtn = smallBtn(sizeRow, "Size +", 0.67, 2, 0.33, 0)
+
+local function syncSizeLabel()
+    resetBtn.Text = ("%.2fx"):format(SCALES[scaleIndex])
 end
-
-local minusBtn = smallBtn("Size -", 0, 0, 0.33, -2, sizeRow)
-local resetBtn = smallBtn("1x",     0.33, 1, 0.34, -2, sizeRow)
-local plusBtn  = smallBtn("Size +", 0.67, 2, 0.33, 0, sizeRow)
 
 minusBtn.MouseButton1Click:Connect(function()
     scaleIndex = math.max(1, scaleIndex - 1)
     local ok, err = applyScale()
     if not ok then notify(tostring(err)) end
-    resetBtn.Text = ("%.2fx"):format(SCALES[scaleIndex])
+    syncSizeLabel()
 end)
 
 plusBtn.MouseButton1Click:Connect(function()
     scaleIndex = math.min(#SCALES, scaleIndex + 1)
     local ok, err = applyScale()
     if not ok then notify(tostring(err)) end
-    resetBtn.Text = ("%.2fx"):format(SCALES[scaleIndex])
+    syncSizeLabel()
 end)
 
 resetBtn.MouseButton1Click:Connect(function()
-    scaleIndex = 4
+    scaleIndex = SCALE_RESET_INDEX
     applyScale()
-    resetBtn.Text = "1x"
+    syncSizeLabel()
 end)
+
+syncSizeLabel()
+
+-- ---------------------------------------------------------------- emote tab
 
 local emoteCat = "all"
 
-sectionLabel("EMOTES", 104)
+sectionLabel(pageEmote, "EMOTES", 1)
 
 local catRow = Instance.new("Frame")
 catRow.Size = UDim2.new(1, -4, 0, 26)
 catRow.BackgroundTransparency = 1
 catRow.BorderSizePixel = 0
-catRow.LayoutOrder = 105
-catRow.Parent = list
+catRow.LayoutOrder = 2
+catRow.Parent = pageEmote
 
 local searchBox = Instance.new("TextBox")
 searchBox.Size = UDim2.new(1, -4, 0, 28)
@@ -1131,22 +1414,22 @@ searchBox.Font = Enum.Font.Gotham
 searchBox.TextSize = 12
 searchBox.BorderSizePixel = 0
 searchBox.ClearTextOnFocus = false
-searchBox.LayoutOrder = 106
-searchBox.Parent = list
+searchBox.LayoutOrder = 3
+searchBox.Parent = pageEmote
 
 local searchCorner = Instance.new("UICorner")
 searchCorner.CornerRadius = UDim.new(0, 6)
 searchCorner.Parent = searchBox
 
 local results = Instance.new("ScrollingFrame")
-results.Size = UDim2.new(1, -4, 0, 150)
+results.Size = UDim2.new(1, -4, 0, 240)
 results.BackgroundColor3 = Color3.fromRGB(26, 26, 31)
 results.BorderSizePixel = 0
 results.ScrollBarThickness = 3
 results.CanvasSize = UDim2.new(0, 0, 0, 0)
 results.AutomaticCanvasSize = Enum.AutomaticSize.Y
-results.LayoutOrder = 107
-results.Parent = list
+results.LayoutOrder = 4
+results.Parent = pageEmote
 
 local resultsCorner = Instance.new("UICorner")
 resultsCorner.CornerRadius = UDim.new(0, 6)
@@ -1211,7 +1494,7 @@ local function styleCats()
 end
 
 for i, cat in ipairs(CATS) do
-    local b = smallBtn(cat.label, (i - 1) * 0.25, (i - 1) * 2, 0.25, -2, catRow)
+    local b = smallBtn(catRow, cat.label, (i - 1) * 0.25, (i - 1) * 2, 0.25, -2)
     b.TextSize = 11
     catButtons[cat.key] = b
     b.MouseButton1Click:Connect(function()
@@ -1223,7 +1506,7 @@ end
 
 searchBox:GetPropertyChangedSignal("Text"):Connect(renderEmotes)
 
-local stopBtn = flatButton("Stop emote", 108, 28)
+local stopBtn = flatButton(pageEmote, "Stop emote", 5, 28)
 stopBtn.BackgroundColor3 = Color3.fromRGB(74, 44, 44)
 stopBtn.TextXAlignment = Enum.TextXAlignment.Center
 stopBtn.MouseButton1Click:Connect(stopEmote)
@@ -1231,7 +1514,8 @@ stopBtn.MouseButton1Click:Connect(stopEmote)
 styleCats()
 renderEmotes()
 
--- drag
+-- ---------------------------------------------------------------- window controls
+
 local dragging, dragStart, startPos
 header.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
@@ -1261,7 +1545,6 @@ UIS.InputEnded:Connect(function(input)
     end
 end)
 
--- reopen button
 local reopen = Instance.new("TextButton")
 reopen.Size = UDim2.fromOffset(40, 40)
 reopen.Position = UDim2.new(0, 24, 0.5, 200)
@@ -1294,6 +1577,7 @@ UIS.InputBegan:Connect(function(input, gp)
     end
 end)
 
+selectTab("main")
 refreshRows()
 notify("Loaded - RightShift to toggle")
 
