@@ -36,13 +36,16 @@ local walkSpeedTouched = false
 -- ---------------------------------------------------------------- state
 
 local state = {
-    fly       = false,
-    noclip    = false,
-    esp       = false,
-    invisible = false,
-    infJump   = false,
-    clickTP   = false,
-    uiOpen    = true,
+    fly        = false,
+    noclip     = false,
+    esp        = false,
+    invisible  = false,
+    infJump    = false,
+    clickTP    = false,
+    freecam    = false,
+    fullbright = false,
+    autoClick  = false,
+    uiOpen     = true,
 }
 
 -- ---------------------------------------------------------------- helpers
@@ -452,6 +455,170 @@ LP.Idled:Connect(function()
     end)
 end)
 
+-- ---------------------------------------------------------------- freecam / lighting / auto click
+
+local freecamConn, freecamCF
+local freecamSpeed = 40
+
+local function freecamOn()
+    local cam = workspace.CurrentCamera
+    if not cam then return false end
+    if state.freecam then return true end
+
+    state.freecam = true
+    freecamCF = cam.CFrame
+    cam.CameraType = Enum.CameraType.Scriptable
+
+    freecamConn = RunService.RenderStepped:Connect(function(dt)
+        local move = Vector3.new(0, 0, 0)
+        if UIS:IsKeyDown(Enum.KeyCode.W) then move += freecamCF.LookVector end
+        if UIS:IsKeyDown(Enum.KeyCode.S) then move -= freecamCF.LookVector end
+        if UIS:IsKeyDown(Enum.KeyCode.D) then move += freecamCF.RightVector end
+        if UIS:IsKeyDown(Enum.KeyCode.A) then move -= freecamCF.RightVector end
+        if UIS:IsKeyDown(Enum.KeyCode.Space) then move += Vector3.new(0, 1, 0) end
+        if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then move -= Vector3.new(0, 1, 0) end
+
+        if UIS:IsKeyDown(Enum.KeyCode.Q) then
+            freecamCF = freecamCF * CFrame.Angles(0, math.rad(70 * dt), 0)
+        end
+        if UIS:IsKeyDown(Enum.KeyCode.E) then
+            freecamCF = freecamCF * CFrame.Angles(0, math.rad(-70 * dt), 0)
+        end
+
+        if move.Magnitude > 0 then
+            freecamCF = freecamCF + move.Unit * freecamSpeed * dt
+        end
+        cam.CFrame = freecamCF
+    end)
+
+    return true
+end
+
+local function freecamOff()
+    state.freecam = false
+    if freecamConn then freecamConn:Disconnect(); freecamConn = nil end
+    local cam = workspace.CurrentCamera
+    if cam then
+        cam.CameraType = Enum.CameraType.Custom
+        local _, hum = getChar()
+        if hum then cam.CameraSubject = hum end
+    end
+end
+
+-- Touch drag rotates the freecam, so it is usable on phones too.
+local freecamTouch, freecamTouchPos
+
+UIS.InputBegan:Connect(function(input, gp)
+    if not state.freecam or gp then return end
+    if input.UserInputType == Enum.UserInputType.Touch then
+        freecamTouch = input
+        freecamTouchPos = input.Position
+    end
+end)
+
+UIS.InputChanged:Connect(function(input)
+    if not state.freecam or not freecamTouch or input ~= freecamTouch then return end
+    local delta = input.Position - freecamTouchPos
+    freecamTouchPos = input.Position
+    freecamCF = freecamCF * CFrame.fromEulerAnglesYXZ(
+        math.rad(-delta.Y * 0.35),
+        math.rad(-delta.X * 0.35),
+        0
+    )
+end)
+
+UIS.InputEnded:Connect(function(input)
+    if freecamTouch and input == freecamTouch then
+        freecamTouch = nil
+    end
+end)
+
+local lightingSaved
+
+local function fullbrightOn()
+    local L = game:GetService("Lighting")
+    if not lightingSaved then
+        lightingSaved = {
+            Brightness = L.Brightness,
+            Ambient = L.Ambient,
+            OutdoorAmbient = L.OutdoorAmbient,
+            FogEnd = L.FogEnd,
+            FogStart = L.FogStart,
+            ClockTime = L.ClockTime,
+            GlobalShadows = L.GlobalShadows,
+        }
+    end
+    L.Brightness = 3
+    L.Ambient = Color3.fromRGB(255, 255, 255)
+    L.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+    L.FogStart = 1e6
+    L.FogEnd = 1e6
+    L.GlobalShadows = false
+    L.ClockTime = 12
+    state.fullbright = true
+    return true
+end
+
+local function fullbrightOff()
+    state.fullbright = false
+    if not lightingSaved then return end
+    local L = game:GetService("Lighting")
+    local saved = lightingSaved
+    lightingSaved = nil
+    pcall(function()
+        L.Brightness = saved.Brightness
+        L.Ambient = saved.Ambient
+        L.OutdoorAmbient = saved.OutdoorAmbient
+        L.FogStart = saved.FogStart
+        L.FogEnd = saved.FogEnd
+        L.ClockTime = saved.ClockTime
+        L.GlobalShadows = saved.GlobalShadows
+    end)
+end
+
+local autoClickThread
+local clickInterval = 0.1
+
+local function doClick()
+    if type(mouse1click) == "function" then
+        pcall(mouse1click)
+        return true
+    end
+    local ok, vim = pcall(function() return game:GetService("VirtualInputManager") end)
+    if ok and vim then
+        local pos = UIS:GetMouseLocation()
+        pcall(function()
+            vim:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 1)
+            vim:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 1)
+        end)
+        return true
+    end
+    return false
+end
+
+local function autoClickOn()
+    state.autoClick = true
+    if autoClickThread then return true end
+
+    autoClickThread = task.spawn(function()
+        while state.autoClick do
+            if not doClick() then
+                state.autoClick = false
+                notify("Auto click: executor has no mouse API")
+                break
+            end
+            task.wait(clickInterval)
+        end
+        autoClickThread = nil
+    end)
+
+    return true
+end
+
+local function autoClickOff()
+    state.autoClick = false
+end
+
 -- ---------------------------------------------------------------- feature dispatch
 
 local function setFeature(key, on)
@@ -471,6 +638,18 @@ local function setFeature(key, on)
         if on then return invisibleOn() end
         invisibleOff()
         return true
+    elseif key == "freecam" then
+        if on then return freecamOn() end
+        freecamOff()
+        return true
+    elseif key == "fullbright" then
+        if on then return fullbrightOn() end
+        fullbrightOff()
+        return true
+    elseif key == "autoClick" then
+        if on then return autoClickOn() end
+        autoClickOff()
+        return true
     elseif key == "infJump" then
         state.infJump = on
         return true
@@ -489,6 +668,7 @@ LP.CharacterAdded:Connect(function()
     if hum and walkSpeedTouched then hum.WalkSpeed = walkSpeedValue end
     if state.noclip then noclipOn() end
     if state.invisible then invisibleOn() end
+    if state.freecam then freecamOff(); freecamOn() end
 end)
 
 -- ---------------------------------------------------------------- avatar tools
@@ -1087,12 +1267,15 @@ local function refreshRows()
 end
 
 local featureList = {
-    { key = "fly",       label = "Fly  (WASD / Space / Ctrl)" },
-    { key = "noclip",    label = "Noclip" },
-    { key = "esp",       label = "Player ESP" },
-    { key = "invisible", label = "Invisible (client-side)" },
-    { key = "infJump",   label = "Infinite Jump" },
-    { key = "clickTP",   label = "Click Teleport" },
+    { key = "fly",        label = "Fly  (WASD / Space / Ctrl)" },
+    { key = "noclip",     label = "Noclip" },
+    { key = "esp",        label = "Player ESP" },
+    { key = "invisible",  label = "Invisible (client-side)" },
+    { key = "freecam",    label = "Freecam  (WASD / Q E / Space)" },
+    { key = "fullbright", label = "Fullbright + no fog" },
+    { key = "autoClick",  label = "Auto click" },
+    { key = "infJump",    label = "Infinite Jump" },
+    { key = "clickTP",    label = "Click Teleport" },
 }
 
 for i, feat in ipairs(featureList) do
@@ -1136,6 +1319,10 @@ end)
 
 makeSlider(pageMain, 52, "Fly speed", 10, 300, 55, 1, function(v)
     flySpeed = v
+end)
+
+makeSlider(pageMain, 53, "Click delay (ms)", 20, 500, 100, 10, function(v)
+    clickInterval = v / 1000
 end)
 
 -- ---------------------------------------------------------------- player tab
@@ -1426,6 +1613,109 @@ hint.Parent = pageWorld
 local whCorner = Instance.new("UICorner")
 whCorner.CornerRadius = UDim.new(0, 6)
 whCorner.Parent = hint
+
+sectionLabel(pageWorld, "WAYPOINTS", 8)
+
+local wpRow = Instance.new("Frame")
+wpRow.Size = UDim2.new(1, -4, 0, 28)
+wpRow.BackgroundTransparency = 1
+wpRow.BorderSizePixel = 0
+wpRow.LayoutOrder = 9
+wpRow.Parent = pageWorld
+
+local saveWpBtn = smallBtn(wpRow, "Save here", 0, 0, 0.62, -2)
+local clearWpBtn = smallBtn(wpRow, "Clear", 0.62, 1, 0.38, -1)
+
+local wpList = Instance.new("ScrollingFrame")
+wpList.Size = UDim2.new(1, -4, 0, 96)
+wpList.BackgroundColor3 = Color3.fromRGB(26, 26, 31)
+wpList.BorderSizePixel = 0
+wpList.ScrollBarThickness = 3
+wpList.CanvasSize = UDim2.new(0, 0, 0, 0)
+wpList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+wpList.LayoutOrder = 10
+wpList.Parent = pageWorld
+
+local wlCorner = Instance.new("UICorner")
+wlCorner.CornerRadius = UDim.new(0, 6)
+wlCorner.Parent = wpList
+
+local wlLayout = Instance.new("UIListLayout")
+wlLayout.Padding = UDim.new(0, 2)
+wlLayout.Parent = wpList
+
+local waypoints = {}
+local wpCounter = 0
+
+local function renderWaypoints()
+    for _, ch in ipairs(wpList:GetChildren()) do
+        if ch:IsA("TextButton") then ch:Destroy() end
+    end
+
+    if #waypoints == 0 then
+        local l = Instance.new("TextLabel")
+        l.Size = UDim2.new(1, -6, 0, 24)
+        l.BackgroundTransparency = 1
+        l.Text = "  no waypoints yet"
+        l.TextColor3 = Color3.fromRGB(120, 120, 130)
+        l.Font = Enum.Font.Gotham
+        l.TextSize = 10
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.Parent = wpList
+        return
+    end
+
+    for i, wp in ipairs(waypoints) do
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(1, -6, 0, 24)
+        b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+        b.Text = ("  %d. %s"):format(i, wp.name)
+        b.TextColor3 = Color3.fromRGB(200, 210, 225)
+        b.Font = Enum.Font.Gotham
+        b.TextSize = 10
+        b.TextXAlignment = Enum.TextXAlignment.Left
+        b.AutoButtonColor = false
+        b.BorderSizePixel = 0
+        b.Parent = wpList
+
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, 4)
+        c.Parent = b
+
+        b.MouseButton1Click:Connect(function()
+            local _, _, hrp = getChar()
+            if not hrp then
+                notify("Character not loaded")
+                return
+            end
+            hrp.CFrame = wp.cf + Vector3.new(0, 3, 0)
+            setStatus("tp to " .. wp.name)
+        end)
+    end
+end
+
+saveWpBtn.MouseButton1Click:Connect(function()
+    local _, _, hrp = getChar()
+    if not hrp then
+        notify("Character not loaded")
+        return
+    end
+    wpCounter += 1
+    table.insert(waypoints, { name = "wp" .. wpCounter, cf = hrp.CFrame })
+    if #waypoints > 12 then
+        table.remove(waypoints, 1)
+    end
+    renderWaypoints()
+    setStatus(("waypoint wp%d saved"):format(wpCounter))
+end)
+
+clearWpBtn.MouseButton1Click:Connect(function()
+    waypoints = {}
+    renderWaypoints()
+    setStatus("waypoints cleared")
+end)
+
+renderWaypoints()
 
 local function clearItemBoxes()
     for part, box in pairs(itemBoxes) do
