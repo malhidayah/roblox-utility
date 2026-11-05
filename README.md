@@ -37,6 +37,10 @@ If the game enables Server Authority, the server owns physics and client movemen
 The World tab lists the map's own interaction points, nearest first:
 
 - **Pickup prompts / clicks** — a `ProximityPrompt` (the "hold E" bar) or a `ClickDetector`. Tapping a row fires it through the game's own server handler. Uses `fireproximityprompt` / `fireclickdetector` when the executor has them, and falls back to simulating the key hold.
+- **Prompt options** — two buttons under the scan row:
+  - **Fast (bypass)** — `fireproximityprompt`: ignores distance and the hold. This is what every public script does, and it is detectable: a game can compare `PromptButtonHoldBegan` with `Triggered` and kick anyone whose trigger arrived without a hold (documented on the Roblox devforum, July 2025).
+  - **Hold (safe)** — `InputHoldBegin` / `InputHoldEnd`: sends the real hold signal, so that check passes. Needs the prompt in range.
+  - **Auto in range** — fires prompts as you come near them, driven by `ProximityPromptService.PromptShown`, which only fires for prompts you can actually reach. 3 second cooldown per prompt. Turn it off in shops.
 - **Tools in map** — every `Tool` currently in `workspace`. Three actions per row:
   - tap the name — teleport onto the tool
   - **Take** — press the map's own pickup (prompt, then click, then touch), then watch your Backpack for the result and equip it

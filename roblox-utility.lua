@@ -42,6 +42,10 @@ local UIS         = game:GetService("UserInputService")
 local VirtualUser = game:GetService("VirtualUser")
 local StarterGui  = game:GetService("StarterGui")
 
+-- PromptShown fires client-side only for prompts the player is actually near,
+-- which is what the auto-pickup toggle listens to.
+local PromptService = game:GetService("ProximityPromptService")
+
 local LP   = Players.LocalPlayer
 local genv = sharedEnv()
 
@@ -580,7 +584,10 @@ local function freecamOn()
     cam.CameraType = Enum.CameraType.Scriptable
     freezeCharacter(true)
 
-    freecamConn = RunService.RenderStepped:Connect(function(dt)
+    -- Bind at camera priority instead of RenderStepped: the camera update then
+    -- runs in the same phase as the default camera, which removes the one-frame
+    -- lag between input and view. Same approach as Infinite Yield's freecam.
+    RunService:BindToRenderStep("UtilFreecam", Enum.RenderPriority.Camera.Value + 1, function(dt)
         -- Joystick and keyboard input keep pushing the humanoid; cancel it.
         local _, hum = getChar()
         if hum then
@@ -615,6 +622,7 @@ end
 local function freecamOff()
     state.freecam = false
     if freecamConn then freecamConn:Disconnect(); freecamConn = nil end
+    pcall(function() RunService:UnbindFromRenderStep("UtilFreecam") end)
     freezeCharacter(false)
     local cam = workspace.CurrentCamera
     if cam then
@@ -1901,7 +1909,7 @@ local function buildUI()
     hint.AutomaticSize = Enum.AutomaticSize.Y
     hint.BackgroundColor3 = C.panel
     hint.BorderSizePixel = 0
-    hint.Text = "Scan lists the part names this map uses, so you can filter for them. ESP, TP and Pull only move things on your client; the server can snap back anything it owns. Prompts and tools below go through the game itself. Take presses the map's own pickup, then checks your Backpack and equips whatever the server actually handed over. Coins and points go to the game's HUD, not the Backpack."
+    hint.Text = "Scan lists the part names this map uses, so you can filter for them. ESP, TP and Pull only move things on your client; the server can snap back anything it owns. Prompts and tools below go through the game itself. Take presses the map's own pickup, then checks your Backpack and equips whatever the server actually handed over. Coins and points go to the game's HUD, not the Backpack. Fast prompt mode skips the key hold, which some games can detect; Hold mode presses it for real."
     hint.TextColor3 = C.muted
     hint.Font = Enum.Font.Gotham
     hint.TextSize = 10
@@ -2318,6 +2326,18 @@ local function buildUI()
         local promptScanBtn = smallBtn(promptRow, "Scan prompts", 0, 0, 0.5, -2)
         local promptNearBtn = smallBtn(promptRow, "Nearest", 0.5, 1, 0.5, -1)
 
+        local promptOptRow = Instance.new("Frame")
+        promptOptRow.Size = UDim2.new(1, -4, 0, 26)
+        promptOptRow.BackgroundTransparency = 1
+        promptOptRow.BorderSizePixel = 0
+        promptOptRow.LayoutOrder = 22
+        promptOptRow.Parent = pageWorld
+
+        local modeBtn = smallBtn(promptOptRow, "Fast (bypass)", 0, 0, 0.46, -2)
+        modeBtn.TextSize = 10
+        local autoBtn = smallBtn(promptOptRow, "Auto in range: OFF", 0.46, 1, 0.54, -1)
+        autoBtn.TextSize = 10
+
         local promptList = Instance.new("ScrollingFrame")
         promptList.Size = UDim2.new(1, -4, 0, 132)
         promptList.BackgroundColor3 = C.panel
@@ -2325,7 +2345,7 @@ local function buildUI()
         promptList.ScrollBarThickness = 2
         promptList.CanvasSize = UDim2.new(0, 0, 0, 0)
         promptList.AutomaticCanvasSize = Enum.AutomaticSize.Y
-        promptList.LayoutOrder = 22
+        promptList.LayoutOrder = 23
         promptList.Parent = pageWorld
 
         local plCorner = Instance.new("UICorner")
@@ -2483,6 +2503,8 @@ local function buildUI()
             return false
         end
 
+        local promptMode = "fast"
+
         local function firePrompt(prompt)
             if not prompt or not prompt.Parent then
                 notify("Prompt is gone")
@@ -2502,9 +2524,28 @@ local function buildUI()
                 return ok
             end
 
+            -- Hold mode simulates the real key press, which also sends the
+            -- PromptButtonHoldBegan signal that games use to detect the raw
+            -- fireproximityprompt bypass. It needs the prompt in range.
+            local function hold()
+                local ok = pcall(function()
+                    prompt:InputHoldBegin()
+                    task.wait(math.min(tonumber(prompt.HoldDuration) or 0, 0.8))
+                    prompt:InputHoldEnd()
+                end)
+                return ok
+            end
+
+            if promptMode == "hold" then
+                if hold() then
+                    setStatus("prompt held: " .. promptLabel(prompt))
+                    return true
+                end
+            end
+
             -- fireproximityprompt is the executor-side shortcut: it calls the
-            -- prompt's own trigger on the server without walking over or
-            -- holding the key. Every mainstream executor ships it.
+            -- prompt's trigger on the server without walking over or holding
+            -- the key. Every mainstream executor ships it.
             if type(fireproximityprompt) == "function" then
                 local ok = pcall(fireproximityprompt, prompt)
                 if ok then
@@ -2513,20 +2554,13 @@ local function buildUI()
                 end
             end
 
-            -- Fallback for executors without the helper: simulate the key hold.
-            local ok, err = pcall(function()
-                prompt:InputHoldBegin()
-                task.wait(math.min(tonumber(prompt.HoldDuration) or 0, 0.8))
-                prompt:InputHoldEnd()
-            end)
-
-            if not ok then
-                setStatus("prompt failed: " .. tostring(err))
-                return false
+            if promptMode ~= "hold" and hold() then
+                setStatus("prompt held: " .. promptLabel(prompt))
+                return true
             end
 
-            setStatus("prompt fired: " .. promptLabel(prompt))
-            return true
+            setStatus("prompt failed: " .. promptLabel(prompt))
+            return false
         end
 
         local function renderPrompts()
@@ -2580,15 +2614,64 @@ local function buildUI()
             end
         end)
 
+        local autoPrompt = false
+        local autoSeen = {}
+
+        local function stylePromptOpts()
+            local hold = promptMode == "hold"
+            modeBtn.Text = hold and "Hold (safe)" or "Fast (bypass)"
+            modeBtn.BackgroundColor3 = hold and C.rowOn or C.row
+            modeBtn.TextColor3 = hold and C.accent or C.text
+
+            autoBtn.Text = autoPrompt and "Auto in range: ON" or "Auto in range: OFF"
+            autoBtn.BackgroundColor3 = autoPrompt and C.rowOn or C.row
+            autoBtn.TextColor3 = autoPrompt and C.accent or C.text
+        end
+
+        modeBtn.MouseButton1Click:Connect(function()
+            promptMode = (promptMode == "hold") and "fast" or "hold"
+            stylePromptOpts()
+            setStatus(promptMode == "hold"
+                and "prompt mode: hold - sends the real hold signal"
+                or "prompt mode: fast - bypasses distance")
+        end)
+
+        autoBtn.MouseButton1Click:Connect(function()
+            autoPrompt = not autoPrompt
+            stylePromptOpts()
+            setStatus(autoPrompt and "auto prompt: on, in-range prompts only" or "auto prompt: off")
+        end)
+
+        stylePromptOpts()
+
+        -- PromptShown fires client-side only for prompts the player is close
+        -- enough to use, so this never reaches across the map.
+        PromptService.PromptShown:Connect(function(prompt)
+            if not autoPrompt or not prompt or not prompt.Parent then return end
+
+            local now = os.clock()
+            local last = autoSeen[prompt]
+            if last and (now - last) < 3 then return end
+            autoSeen[prompt] = now
+
+            task.spawn(function()
+                local before = backpackTools()
+                local label = promptLabel(prompt)
+                if firePrompt(prompt) then
+                    reportGain(before, label)
+                end
+            end)
+        end)
+
         placeHolder(promptList, "press Scan prompts")
 
-        sectionLabel(pageWorld, "TOOLS IN MAP", 23)
+        sectionLabel(pageWorld, "TOOLS IN MAP", 24)
 
         local toolRow = Instance.new("Frame")
         toolRow.Size = UDim2.new(1, -4, 0, 28)
         toolRow.BackgroundTransparency = 1
         toolRow.BorderSizePixel = 0
-        toolRow.LayoutOrder = 24
+        toolRow.LayoutOrder = 25
         toolRow.Parent = pageWorld
 
         local toolScanBtn = smallBtn(toolRow, "Scan tools", 0, 0, 0.5, -2)
@@ -2601,7 +2684,7 @@ local function buildUI()
         toolList.ScrollBarThickness = 2
         toolList.CanvasSize = UDim2.new(0, 0, 0, 0)
         toolList.AutomaticCanvasSize = Enum.AutomaticSize.Y
-        toolList.LayoutOrder = 25
+        toolList.LayoutOrder = 26
         toolList.Parent = pageWorld
 
         local tlCorner = Instance.new("UICorner")
@@ -2685,9 +2768,8 @@ local function buildUI()
             end
         end
 
-        -- Some maps hand the tool over from a Touched handler rather than a
-        -- prompt. firetouchinterest is the executor helper that fires that
-        -- handler without moving the character.
+        -- Community-standard argument order, as used by Infinite Yield:
+        -- firetouchinterest(partThatGetsTouched, toucher, toggle).
         local function touchTool(tool)
             local _, _, hrp = getChar()
             local part = toolPart(tool)
@@ -2701,9 +2783,9 @@ local function buildUI()
             end
 
             local ok = pcall(function()
-                firetouchinterest(hrp, part, 0)
+                firetouchinterest(part, hrp, 0)
                 task.wait()
-                firetouchinterest(hrp, part, 1)
+                firetouchinterest(part, hrp, 1)
             end)
 
             setStatus((ok and "touched " or "touch failed ") .. tostring(tool.Name))
