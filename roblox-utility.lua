@@ -60,7 +60,6 @@ local state = {
     clickTP    = false,
     freecam    = false,
     fullbright = false,
-    autoClick  = false,
     speedLock  = false,
     uiOpen     = true,
 }
@@ -537,6 +536,39 @@ end)
 
 local freecamConn, freecamCF
 local freecamSpeed = 40
+local freecamFrozen
+
+-- Freecam is only useful if the character stops walking while you look around.
+-- Pin the humanoid instead of anchoring the root part: anchoring a part the
+-- server still simulates causes rubber-banding.
+local function freezeCharacter(on)
+    local _, hum = getChar()
+    if not hum then return end
+
+    if on then
+        if freecamFrozen then return end
+        freecamFrozen = {
+            WalkSpeed = hum.WalkSpeed,
+            JumpPower = hum.JumpPower,
+            AutoRotate = hum.AutoRotate,
+        }
+        hum.WalkSpeed = 0
+        hum.JumpPower = 0
+        hum.AutoRotate = false
+        pcall(function() hum:Move(Vector3.zero, false) end)
+    else
+        local saved = freecamFrozen
+        freecamFrozen = nil
+        if not saved then return end
+        pcall(function()
+            hum.WalkSpeed = saved.WalkSpeed
+            hum.JumpPower = saved.JumpPower
+            hum.AutoRotate = saved.AutoRotate
+        end)
+        -- The walk speed slider may have moved while freecam was on.
+        if walkSpeedTouched then hum.WalkSpeed = walkSpeedValue end
+    end
+end
 
 local function freecamOn()
     local cam = workspace.CurrentCamera
@@ -546,8 +578,16 @@ local function freecamOn()
     state.freecam = true
     freecamCF = cam.CFrame
     cam.CameraType = Enum.CameraType.Scriptable
+    freezeCharacter(true)
 
     freecamConn = RunService.RenderStepped:Connect(function(dt)
+        -- Joystick and keyboard input keep pushing the humanoid; cancel it.
+        local _, hum = getChar()
+        if hum then
+            hum.WalkSpeed = 0
+            pcall(function() hum:Move(Vector3.zero, false) end)
+        end
+
         local move = Vector3.new(0, 0, 0)
         if UIS:IsKeyDown(Enum.KeyCode.W) then move += freecamCF.LookVector end
         if UIS:IsKeyDown(Enum.KeyCode.S) then move -= freecamCF.LookVector end
@@ -575,6 +615,7 @@ end
 local function freecamOff()
     state.freecam = false
     if freecamConn then freecamConn:Disconnect(); freecamConn = nil end
+    freezeCharacter(false)
     local cam = workspace.CurrentCamera
     if cam then
         cam.CameraType = Enum.CameraType.Custom
@@ -654,49 +695,6 @@ local function fullbrightOff()
     end)
 end
 
-local autoClickThread
-local clickInterval = 0.1
-
-local function doClick()
-    if type(mouse1click) == "function" then
-        pcall(mouse1click)
-        return true
-    end
-    local ok, vim = pcall(function() return game:GetService("VirtualInputManager") end)
-    if ok and vim then
-        local pos = UIS:GetMouseLocation()
-        pcall(function()
-            vim:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 1)
-            vim:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 1)
-        end)
-        return true
-    end
-    return false
-end
-
-local function autoClickOn()
-    state.autoClick = true
-    if autoClickThread then return true end
-
-    autoClickThread = task.spawn(function()
-        while state.autoClick do
-            if not doClick() then
-                state.autoClick = false
-                notify("Auto click: executor has no mouse API")
-                break
-            end
-            task.wait(clickInterval)
-        end
-        autoClickThread = nil
-    end)
-
-    return true
-end
-
-local function autoClickOff()
-    state.autoClick = false
-end
-
 -- Many games rewrite Humanoid.WalkSpeed every frame. This keeps your value.
 local speedLockThread
 
@@ -705,8 +703,9 @@ local function speedLockOn()
     if speedLockThread then return true end
     speedLockThread = task.spawn(function()
         while state.speedLock do
+            -- Freecam pins WalkSpeed to 0 on purpose; do not fight it.
             local _, hum = getChar()
-            if hum and hum.WalkSpeed ~= walkSpeedValue then
+            if hum and not state.freecam and hum.WalkSpeed ~= walkSpeedValue then
                 hum.WalkSpeed = walkSpeedValue
             end
             task.wait(0.25)
@@ -752,10 +751,6 @@ local function setFeature(key, on)
     elseif key == "fullbright" then
         if on then return fullbrightOn() end
         fullbrightOff()
-        return true
-    elseif key == "autoClick" then
-        if on then return autoClickOn() end
-        autoClickOff()
         return true
     elseif key == "speedLock" then
         if on then return speedLockOn() end
@@ -1044,6 +1039,18 @@ end
 local function buildUI()
     -- ---------------------------------------------------------------- ui
 
+    local C = {
+        bg     = Color3.fromRGB(16, 16, 20),
+        panel  = Color3.fromRGB(23, 23, 28),
+        row    = Color3.fromRGB(31, 31, 37),
+        rowOn  = Color3.fromRGB(24, 58, 41),
+        line   = Color3.fromRGB(44, 44, 52),
+        text   = Color3.fromRGB(226, 226, 232),
+        muted  = Color3.fromRGB(134, 134, 146),
+        dim    = Color3.fromRGB(92, 92, 104),
+        accent = Color3.fromRGB(92, 214, 143),
+    }
+
     local parent = (gethui and gethui()) or LP:WaitForChild("PlayerGui")
 
     -- Re-running the loader replaces the old window instead of stacking a second one.
@@ -1064,45 +1071,50 @@ local function buildUI()
     main.Name = "Main"
     main.Size = UDim2.fromOffset(300, 500)
     main.Position = UDim2.new(0, 24, 0.5, -250)
-    main.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
+    main.BackgroundColor3 = C.bg
     main.BorderSizePixel = 0
     main.Active = true
     main.Parent = screen
 
     local mainCorner = Instance.new("UICorner")
-    mainCorner.CornerRadius = UDim.new(0, 8)
+    mainCorner.CornerRadius = UDim.new(0, 10)
     mainCorner.Parent = main
 
     local mainStroke = Instance.new("UIStroke")
-    mainStroke.Color = Color3.fromRGB(60, 60, 70)
+    mainStroke.Color = C.line
     mainStroke.Thickness = 1
     mainStroke.Parent = main
 
     -- Phones report a small viewport, so a fixed 300x500 box can start with its
-    -- header off-screen. Fit the window to the viewport before showing it.
+    -- header off-screen. Size the window from the viewport instead.
     local function fitMain()
         local cam = workspace.CurrentCamera
         if not cam then return end
         local vp = cam.ViewportSize
         if vp.X < 1 or vp.Y < 1 then return end
 
-        local w = math.min(300, math.max(200, vp.X - 12))
-        local h = math.min(500, math.max(260, vp.Y - 12))
-        main.Size = UDim2.fromOffset(w, h)
+        local w = math.clamp(math.floor(vp.X * 0.48), 252, 360)
+        local h = math.clamp(math.floor(vp.Y * 0.80), 300, 560)
 
-        local x = math.clamp(24, 0, math.max(0, vp.X - w))
-        local y = math.max(0, (vp.Y - h) / 2)
-        main.Position = UDim2.fromOffset(x, y)
+        -- Never wider or taller than the screen it has to live in.
+        w = math.min(w, vp.X - 16)
+        h = math.min(h, vp.Y - 16)
+
+        main.Size = UDim2.fromOffset(w, h)
+        main.Position = UDim2.fromOffset(
+            math.clamp(16, 0, math.max(0, vp.X - w)),
+            math.max(0, math.floor((vp.Y - h) / 2))
+        )
     end
 
     local header = Instance.new("Frame")
-    header.Size = UDim2.new(1, 0, 0, 36)
-    header.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+    header.Size = UDim2.new(1, 0, 0, 34)
+    header.BackgroundColor3 = C.panel
     header.BorderSizePixel = 0
     header.Parent = main
 
     local headerCorner = Instance.new("UICorner")
-    headerCorner.CornerRadius = UDim.new(0, 8)
+    headerCorner.CornerRadius = UDim.new(0, 10)
     headerCorner.Parent = header
 
     local title = Instance.new("TextLabel")
@@ -1110,20 +1122,20 @@ local function buildUI()
     title.Position = UDim2.fromOffset(12, 0)
     title.BackgroundTransparency = 1
     title.Text = "Universal Utility"
-    title.TextColor3 = Color3.fromRGB(235, 235, 240)
+    title.TextColor3 = C.text
     title.Font = Enum.Font.GothamMedium
-    title.TextSize = 14
+    title.TextSize = 13
     title.TextXAlignment = Enum.TextXAlignment.Left
     title.Parent = header
 
     local hide = Instance.new("TextButton")
-    hide.Size = UDim2.fromOffset(24, 24)
-    hide.Position = UDim2.new(1, -32, 0, 6)
-    hide.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
+    hide.Size = UDim2.fromOffset(22, 22)
+    hide.Position = UDim2.new(1, -30, 0, 6)
+    hide.BackgroundColor3 = C.row
     hide.Text = "-"
-    hide.TextColor3 = Color3.fromRGB(220, 220, 225)
+    hide.TextColor3 = C.text
     hide.Font = Enum.Font.GothamBold
-    hide.TextSize = 16
+    hide.TextSize = 15
     hide.BorderSizePixel = 0
     hide.Parent = header
 
@@ -1135,13 +1147,14 @@ local function buildUI()
 
     local function sectionLabel(parentFrame, text, order)
         local lbl = Instance.new("TextLabel")
-        lbl.Size = UDim2.new(1, -4, 0, 18)
+        lbl.Size = UDim2.new(1, -4, 0, 24)
         lbl.BackgroundTransparency = 1
         lbl.Text = text
-        lbl.TextColor3 = Color3.fromRGB(120, 120, 132)
+        lbl.TextColor3 = C.dim
         lbl.Font = Enum.Font.GothamBold
-        lbl.TextSize = 10
+        lbl.TextSize = 9
         lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.TextYAlignment = Enum.TextYAlignment.Bottom
         lbl.LayoutOrder = order
         lbl.Parent = parentFrame
         return lbl
@@ -1150,9 +1163,9 @@ local function buildUI()
     local function flatButton(parentFrame, text, order, height)
         local b = Instance.new("TextButton")
         b.Size = UDim2.new(1, -4, 0, height or 30)
-        b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+        b.BackgroundColor3 = C.row
         b.Text = "  " .. text
-        b.TextColor3 = Color3.fromRGB(200, 200, 208)
+        b.TextColor3 = C.text
         b.Font = Enum.Font.Gotham
         b.TextSize = 12
         b.TextXAlignment = Enum.TextXAlignment.Left
@@ -1161,7 +1174,7 @@ local function buildUI()
         b.LayoutOrder = order
         b.Parent = parentFrame
         local c = Instance.new("UICorner")
-        c.CornerRadius = UDim.new(0, 6)
+        c.CornerRadius = UDim.new(0, 7)
         c.Parent = b
         return b
     end
@@ -1170,11 +1183,11 @@ local function buildUI()
         local b = Instance.new("TextButton")
         b.Size = UDim2.new(widthScale, widthOffset, 1, 0)
         b.Position = UDim2.new(xScale, xOffset, 0, 0)
-        b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+        b.BackgroundColor3 = C.row
         b.Text = text
-        b.TextColor3 = Color3.fromRGB(210, 210, 218)
+        b.TextColor3 = C.text
         b.Font = Enum.Font.Gotham
-        b.TextSize = 12
+        b.TextSize = 11
         b.BorderSizePixel = 0
         b.AutoButtonColor = false
         b.Parent = parentFrame
@@ -1186,31 +1199,31 @@ local function buildUI()
 
     local function makeSlider(parentFrame, order, label, min, max, default, step, onChanged)
         local row = Instance.new("Frame")
-        row.Size = UDim2.new(1, -4, 0, 44)
-        row.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+        row.Size = UDim2.new(1, -4, 0, 42)
+        row.BackgroundColor3 = C.row
         row.BorderSizePixel = 0
         row.LayoutOrder = order
         row.Parent = parentFrame
 
         local rc = Instance.new("UICorner")
-        rc.CornerRadius = UDim.new(0, 6)
+        rc.CornerRadius = UDim.new(0, 7)
         rc.Parent = row
 
         local lbl = Instance.new("TextLabel")
         lbl.Size = UDim2.new(1, -16, 0, 16)
-        lbl.Position = UDim2.fromOffset(8, 4)
+        lbl.Position = UDim2.fromOffset(10, 5)
         lbl.BackgroundTransparency = 1
         lbl.Text = label .. ": " .. tostring(default)
-        lbl.TextColor3 = Color3.fromRGB(200, 200, 208)
+        lbl.TextColor3 = C.text
         lbl.Font = Enum.Font.Gotham
-        lbl.TextSize = 12
+        lbl.TextSize = 11
         lbl.TextXAlignment = Enum.TextXAlignment.Left
         lbl.Parent = row
 
         local track = Instance.new("Frame")
-        track.Size = UDim2.new(1, -16, 0, 8)
-        track.Position = UDim2.new(0, 8, 1, -14)
-        track.BackgroundColor3 = Color3.fromRGB(55, 55, 65)
+        track.Size = UDim2.new(1, -20, 0, 6)
+        track.Position = UDim2.new(0, 10, 1, -13)
+        track.BackgroundColor3 = Color3.fromRGB(52, 52, 62)
         track.BorderSizePixel = 0
         track.Active = true
         track.Parent = row
@@ -1230,10 +1243,10 @@ local function buildUI()
         fc.Parent = fill
 
         local knob = Instance.new("Frame")
-        knob.Size = UDim2.fromOffset(14, 14)
+        knob.Size = UDim2.fromOffset(12, 12)
         knob.AnchorPoint = Vector2.new(0.5, 0.5)
         knob.Position = UDim2.new(0, 0, 0.5, 0)
-        knob.BackgroundColor3 = Color3.fromRGB(220, 220, 230)
+        knob.BackgroundColor3 = C.text
         knob.BorderSizePixel = 0
         knob.ZIndex = 2
         knob.Parent = track
@@ -1310,8 +1323,8 @@ local function buildUI()
         end
         for k, b in pairs(tabButtons) do
             local on = (k == key)
-            b.BackgroundColor3 = on and Color3.fromRGB(48, 110, 70) or Color3.fromRGB(30, 30, 36)
-            b.TextColor3 = on and Color3.fromRGB(200, 255, 210) or Color3.fromRGB(170, 170, 180)
+            b.BackgroundColor3 = on and C.rowOn or C.row
+            b.TextColor3 = on and C.accent or C.muted
         end
         if key == "player" and refreshPlayerList then
             refreshPlayerList()
@@ -1322,8 +1335,8 @@ local function buildUI()
     end
 
     local tabBar = Instance.new("Frame")
-    tabBar.Size = UDim2.new(1, -16, 0, 28)
-    tabBar.Position = UDim2.fromOffset(8, 42)
+    tabBar.Size = UDim2.new(1, -14, 0, 26)
+    tabBar.Position = UDim2.fromOffset(7, 40)
     tabBar.BackgroundTransparency = 1
     tabBar.BorderSizePixel = 0
     tabBar.Parent = main
@@ -1340,26 +1353,28 @@ local function buildUI()
     local tabWidth = 1 / #tabDefs
 
     for i, t in ipairs(tabDefs) do
-        local b = smallBtn(tabBar, t.label, (i - 1) * tabWidth, (i - 1) * 2, tabWidth, -2)
+        -- Equal widths, 3px gutters, no accumulated offset.
+        local b = smallBtn(tabBar, t.label, (i - 1) * tabWidth, 2, tabWidth, -5)
         b.TextSize = 10
-        b.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+        b.BackgroundColor3 = C.row
+        b.TextColor3 = C.muted
         tabButtons[t.key] = b
         b.MouseButton1Click:Connect(function() selectTab(t.key) end)
 
         local page = Instance.new("ScrollingFrame")
-        page.Size = UDim2.new(1, -16, 1, -110)
-        page.Position = UDim2.fromOffset(8, 76)
+        page.Size = UDim2.new(1, -14, 1, -102)
+        page.Position = UDim2.fromOffset(7, 72)
         page.BackgroundTransparency = 1
         page.BorderSizePixel = 0
-        page.ScrollBarThickness = 3
-        page.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 90)
+        page.ScrollBarThickness = 2
+        page.ScrollBarImageColor3 = C.line
         page.CanvasSize = UDim2.new(0, 0, 0, 0)
         page.AutomaticCanvasSize = Enum.AutomaticSize.Y
         page.Visible = false
         page.Parent = main
 
         local l = Instance.new("UIListLayout")
-        l.Padding = UDim.new(0, 6)
+        l.Padding = UDim.new(0, 5)
         l.SortOrder = Enum.SortOrder.LayoutOrder
         l.Parent = page
 
@@ -1367,13 +1382,13 @@ local function buildUI()
     end
 
     statusLabel = Instance.new("TextLabel")
-    statusLabel.Size = UDim2.new(1, -16, 0, 22)
-    statusLabel.Position = UDim2.new(0, 8, 1, -26)
+    statusLabel.Size = UDim2.new(1, -14, 0, 20)
+    statusLabel.Position = UDim2.new(0, 7, 1, -24)
     statusLabel.BackgroundTransparency = 1
     statusLabel.Text = "ready"
-    statusLabel.TextColor3 = Color3.fromRGB(130, 130, 140)
+    statusLabel.TextColor3 = C.dim
     statusLabel.Font = Enum.Font.Gotham
-    statusLabel.TextSize = 11
+    statusLabel.TextSize = 10
     statusLabel.TextXAlignment = Enum.TextXAlignment.Left
     statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
     statusLabel.Parent = main
@@ -1392,41 +1407,70 @@ local function buildUI()
     local function refreshRows()
         for key, row in pairs(rows) do
             local on = state[key]
-            row.BackgroundColor3 = on and Color3.fromRGB(48, 110, 70) or Color3.fromRGB(34, 34, 40)
-            row.TextColor3 = on and Color3.fromRGB(200, 255, 210) or Color3.fromRGB(200, 200, 208)
+            row.BackgroundColor3 = on and C.rowOn or C.row
+            local lbl = row:FindFirstChild("Label")
+            local st = row:FindFirstChild("State")
+            if lbl then lbl.TextColor3 = on and C.accent or C.text end
+            if st then
+                st.Text = on and "ON" or "OFF"
+                st.TextColor3 = on and C.accent or C.dim
+            end
         end
     end
 
     local featureList = {
-        { key = "fly",        label = "Fly  (WASD / Space / Ctrl)" },
+        { key = "fly",        label = "Fly",             note = "WASD, Space/Ctrl" },
         { key = "noclip",     label = "Noclip" },
         { key = "esp",        label = "Player ESP" },
-        { key = "invisible",  label = "Invisible (you only)" },
-        { key = "freecam",    label = "Freecam  (WASD / Q E / Space)" },
-        { key = "fullbright", label = "Fullbright + no fog" },
-        { key = "autoClick",  label = "Auto click" },
+        { key = "freecam",    label = "Freecam",         note = "WASD, Q/E" },
+        { key = "invisible",  label = "Invisible",       note = "your screen only" },
+        { key = "fullbright", label = "Fullbright" },
         { key = "speedLock",  label = "Lock walk speed" },
-        { key = "infJump",    label = "Infinite Jump" },
-        { key = "clickTP",    label = "Click Teleport" },
+        { key = "infJump",    label = "Infinite jump" },
+        { key = "clickTP",    label = "Click teleport" },
     }
 
     for i, feat in ipairs(featureList) do
         local row = Instance.new("TextButton")
-        row.Size = UDim2.new(1, -4, 0, 32)
-        row.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
-        row.BorderSizePixel = 0
-        row.Text = "  " .. feat.label
-        row.TextColor3 = Color3.fromRGB(200, 200, 208)
-        row.Font = Enum.Font.Gotham
-        row.TextSize = 13
-        row.TextXAlignment = Enum.TextXAlignment.Left
+        row.Size = UDim2.new(1, -4, 0, 34)
+        row.BackgroundColor3 = C.row
+        row.Text = ""
         row.AutoButtonColor = false
+        row.BorderSizePixel = 0
         row.LayoutOrder = i
         row.Parent = pageMain
 
         local rc = Instance.new("UICorner")
-        rc.CornerRadius = UDim.new(0, 6)
+        rc.CornerRadius = UDim.new(0, 7)
         rc.Parent = row
+
+        local lbl = Instance.new("TextLabel")
+        lbl.Name = "Label"
+        lbl.Size = UDim2.new(1, -74, 1, 0)
+        lbl.Position = UDim2.fromOffset(12, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.RichText = true
+        lbl.Text = feat.note
+            and (feat.label .. "  <font color='#5c5c68'>" .. feat.note .. "</font>")
+            or feat.label
+        lbl.TextColor3 = C.text
+        lbl.Font = Enum.Font.Gotham
+        lbl.TextSize = 12
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.TextTruncate = Enum.TextTruncate.AtEnd
+        lbl.Parent = row
+
+        local st = Instance.new("TextLabel")
+        st.Name = "State"
+        st.Size = UDim2.fromOffset(46, 1)
+        st.Position = UDim2.new(1, -56, 0, 0)
+        st.BackgroundTransparency = 1
+        st.Text = "OFF"
+        st.TextColor3 = C.dim
+        st.Font = Enum.Font.GothamBold
+        st.TextSize = 9
+        st.TextXAlignment = Enum.TextXAlignment.Right
+        st.Parent = row
 
         row.MouseButton1Click:Connect(function()
             local ok, res = pcall(setFeature, feat.key, not state[feat.key])
@@ -1446,37 +1490,34 @@ local function buildUI()
         walkSpeedValue = v
         walkSpeedTouched = true
         local _, hum = getChar()
-        if hum then hum.WalkSpeed = v end
+        if hum and not state.freecam then hum.WalkSpeed = v end
     end)
 
     makeSlider(pageMain, 52, "Fly speed", 10, 300, 55, 1, function(v)
         flySpeed = v
     end)
 
-    makeSlider(pageMain, 53, "Click delay (ms)", 20, 500, 100, 10, function(v)
-        clickInterval = v / 1000
-    end)
-
     sectionLabel(pageMain, "NETWORK", 60)
 
     local netLabel = Instance.new("TextLabel")
-    netLabel.Size = UDim2.new(1, -4, 0, 18)
+    netLabel.Size = UDim2.new(1, -4, 0, 16)
     netLabel.BackgroundTransparency = 1
-    netLabel.Text = "  checking..."
-    netLabel.TextColor3 = Color3.fromRGB(150, 200, 175)
+    netLabel.Text = "checking..."
+    netLabel.TextColor3 = C.muted
     netLabel.Font = Enum.Font.Code
-    netLabel.TextSize = 10
+    netLabel.TextSize = 9
     netLabel.TextXAlignment = Enum.TextXAlignment.Left
     netLabel.TextTruncate = Enum.TextTruncate.AtEnd
     netLabel.LayoutOrder = 61
     netLabel.Parent = pageMain
 
     local netHint = Instance.new("TextLabel")
-    netHint.Size = UDim2.new(1, -4, 0, 56)
-    netHint.BackgroundColor3 = Color3.fromRGB(28, 28, 33)
+    netHint.Size = UDim2.new(1, -4, 0, 0)
+    netHint.AutomaticSize = Enum.AutomaticSize.Y
+    netHint.BackgroundColor3 = C.panel
     netHint.BorderSizePixel = 0
-    netHint.Text = "  What others can see:\n  movement (fly, speed, tp, noclip) and animations.\n  Appearance (invisible, size, outfit) stays on\n  your screen only."
-    netHint.TextColor3 = Color3.fromRGB(150, 150, 162)
+    netHint.Text = "Movement and animations reach other players. Appearance (invisible, size, outfit) stays on your screen."
+    netHint.TextColor3 = C.muted
     netHint.Font = Enum.Font.Gotham
     netHint.TextSize = 10
     netHint.TextXAlignment = Enum.TextXAlignment.Left
@@ -1486,23 +1527,30 @@ local function buildUI()
     netHint.Parent = pageMain
 
     local nhCorner = Instance.new("UICorner")
-    nhCorner.CornerRadius = UDim.new(0, 6)
+    nhCorner.CornerRadius = UDim.new(0, 7)
     nhCorner.Parent = netHint
 
-    local testNetBtn = flatButton(pageMain, "Test movement replication", 63, 28)
+    local nhPad = Instance.new("UIPadding")
+    nhPad.PaddingTop = UDim.new(0, 8)
+    nhPad.PaddingBottom = UDim.new(0, 8)
+    nhPad.PaddingLeft = UDim.new(0, 10)
+    nhPad.PaddingRight = UDim.new(0, 10)
+    nhPad.Parent = netHint
+
+    local testNetBtn = flatButton(pageMain, "Test what others can see", 63, 28)
     testNetBtn.TextXAlignment = Enum.TextXAlignment.Center
 
     testNetBtn.MouseButton1Click:Connect(function()
         setStatus("testing movement...")
         task.spawn(function()
             local result = testMovementReplication()
-            netLabel.Text = "  " .. result
+            netLabel.Text = result
             setStatus(result)
         end)
     end)
 
     local function refreshNetLabel()
-        netLabel.Text = "  " .. netReport()
+        netLabel.Text = netReport()
     end
 
     refreshNetLabel()
@@ -1529,11 +1577,11 @@ local function buildUI()
 
     local tpBox = Instance.new("TextBox")
     tpBox.Size = UDim2.new(1, 0, 0, 28)
-    tpBox.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    tpBox.BackgroundColor3 = C.row
     tpBox.PlaceholderText = "username / display name / UserId"
     tpBox.Text = ""
-    tpBox.TextColor3 = Color3.fromRGB(220, 220, 226)
-    tpBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+    tpBox.TextColor3 = C.text
+    tpBox.PlaceholderColor3 = C.dim
     tpBox.Font = Enum.Font.Gotham
     tpBox.TextSize = 12
     tpBox.BorderSizePixel = 0
@@ -1616,11 +1664,11 @@ local function buildUI()
 
     local playerSearch = Instance.new("TextBox")
     playerSearch.Size = UDim2.new(1, -4, 0, 28)
-    playerSearch.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    playerSearch.BackgroundColor3 = C.row
     playerSearch.PlaceholderText = "search player..."
     playerSearch.Text = ""
-    playerSearch.TextColor3 = Color3.fromRGB(220, 220, 226)
-    playerSearch.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+    playerSearch.TextColor3 = C.text
+    playerSearch.PlaceholderColor3 = C.dim
     playerSearch.Font = Enum.Font.Gotham
     playerSearch.TextSize = 12
     playerSearch.BorderSizePixel = 0
@@ -1634,7 +1682,7 @@ local function buildUI()
 
     local playerList = Instance.new("ScrollingFrame")
     playerList.Size = UDim2.new(1, -4, 0, 240)
-    playerList.BackgroundColor3 = Color3.fromRGB(26, 26, 31)
+    playerList.BackgroundColor3 = C.panel
     playerList.BorderSizePixel = 0
     playerList.ScrollBarThickness = 3
     playerList.CanvasSize = UDim2.new(0, 0, 0, 0)
@@ -1667,7 +1715,7 @@ local function buildUI()
                     local hasRoot = getTargetRoot(plr) ~= nil
                     local b = Instance.new("TextButton")
                     b.Size = UDim2.new(1, -6, 0, 26)
-                    b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+                    b.BackgroundColor3 = C.row
                     b.Text = ("  %s  (@%s)%s"):format(plr.Name, plr.DisplayName, hasRoot and "" or "  [no char]")
                     b.TextColor3 = hasRoot and Color3.fromRGB(200, 220, 210) or Color3.fromRGB(150, 130, 130)
                     b.Font = Enum.Font.Gotham
@@ -1695,7 +1743,7 @@ local function buildUI()
             b.Size = UDim2.new(1, -6, 0, 26)
             b.BackgroundTransparency = 1
             b.Text = "  no players match"
-            b.TextColor3 = Color3.fromRGB(120, 120, 130)
+            b.TextColor3 = C.dim
             b.Font = Enum.Font.Gotham
             b.TextSize = 11
             b.TextXAlignment = Enum.TextXAlignment.Left
@@ -1722,6 +1770,19 @@ local function buildUI()
 
     -- ---------------------------------------------------------------- world tab
 
+    -- GetDescendants() walks the whole tree; on a big map that is the most
+    -- expensive call here. Share one cached copy across ESP, scan, prompts and
+    -- tools instead of walking the tree several times a second.
+    local descCache, descAt = nil, 0
+
+    local function workspaceDescendants()
+        local now = os.clock()
+        if descCache and (now - descAt) < 1.5 then return descCache end
+        descCache = workspace:GetDescendants()
+        descAt = now
+        return descCache
+    end
+
     local itemEsp = false
     local clickGrab = false
     local itemBoxes = {}
@@ -1730,11 +1791,11 @@ local function buildUI()
 
     local worldFilter = Instance.new("TextBox")
     worldFilter.Size = UDim2.new(1, -4, 0, 28)
-    worldFilter.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    worldFilter.BackgroundColor3 = C.row
     worldFilter.PlaceholderText = "part name contains... e.g. Coin"
     worldFilter.Text = ""
-    worldFilter.TextColor3 = Color3.fromRGB(220, 220, 226)
-    worldFilter.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+    worldFilter.TextColor3 = C.text
+    worldFilter.PlaceholderColor3 = C.dim
     worldFilter.Font = Enum.Font.Gotham
     worldFilter.TextSize = 12
     worldFilter.BorderSizePixel = 0
@@ -1771,7 +1832,7 @@ local function buildUI()
 
     local nameList = Instance.new("ScrollingFrame")
     nameList.Size = UDim2.new(1, -4, 0, 120)
-    nameList.BackgroundColor3 = Color3.fromRGB(26, 26, 31)
+    nameList.BackgroundColor3 = C.panel
     nameList.BorderSizePixel = 0
     nameList.ScrollBarThickness = 3
     nameList.CanvasSize = UDim2.new(0, 0, 0, 0)
@@ -1788,13 +1849,14 @@ local function buildUI()
     nlLayout.Parent = nameList
 
     local hint = Instance.new("TextLabel")
-    hint.Size = UDim2.new(1, -4, 0, 96)
-    hint.BackgroundColor3 = Color3.fromRGB(28, 28, 33)
+    hint.Size = UDim2.new(1, -4, 0, 0)
+    hint.AutomaticSize = Enum.AutomaticSize.Y
+    hint.BackgroundColor3 = C.panel
     hint.BorderSizePixel = 0
-    hint.Text = "  ESP marks every part matching the filter.\n  TP nearest jumps to the closest match.\n  Pull all moves up to 60 matches next to you.\n  Grab: tap a part on screen to pull it.\n\n  All of this runs on your client. The server\n  can snap anything it owns back to where it was."
-    hint.TextColor3 = Color3.fromRGB(160, 160, 172)
+    hint.Text = "Scan lists the part names this map uses, so you can filter for them. ESP, TP and Pull only move things on your client; the server can snap back anything it owns. Prompts and tools below go through the game itself."
+    hint.TextColor3 = C.muted
     hint.Font = Enum.Font.Gotham
-    hint.TextSize = 11
+    hint.TextSize = 10
     hint.TextXAlignment = Enum.TextXAlignment.Left
     hint.TextYAlignment = Enum.TextYAlignment.Top
     hint.TextWrapped = true
@@ -1802,8 +1864,15 @@ local function buildUI()
     hint.Parent = pageWorld
 
     local whCorner = Instance.new("UICorner")
-    whCorner.CornerRadius = UDim.new(0, 6)
+    whCorner.CornerRadius = UDim.new(0, 7)
     whCorner.Parent = hint
+
+    local whPad = Instance.new("UIPadding")
+    whPad.PaddingTop = UDim.new(0, 8)
+    whPad.PaddingBottom = UDim.new(0, 8)
+    whPad.PaddingLeft = UDim.new(0, 10)
+    whPad.PaddingRight = UDim.new(0, 10)
+    whPad.Parent = hint
 
     sectionLabel(pageWorld, "WAYPOINTS", 8)
 
@@ -1819,7 +1888,7 @@ local function buildUI()
 
     local wpList = Instance.new("ScrollingFrame")
     wpList.Size = UDim2.new(1, -4, 0, 96)
-    wpList.BackgroundColor3 = Color3.fromRGB(26, 26, 31)
+    wpList.BackgroundColor3 = C.panel
     wpList.BorderSizePixel = 0
     wpList.ScrollBarThickness = 3
     wpList.CanvasSize = UDim2.new(0, 0, 0, 0)
@@ -1848,7 +1917,7 @@ local function buildUI()
             l.Size = UDim2.new(1, -6, 0, 24)
             l.BackgroundTransparency = 1
             l.Text = "  no waypoints yet"
-            l.TextColor3 = Color3.fromRGB(120, 120, 130)
+            l.TextColor3 = C.dim
             l.Font = Enum.Font.Gotham
             l.TextSize = 10
             l.TextXAlignment = Enum.TextXAlignment.Left
@@ -1859,9 +1928,9 @@ local function buildUI()
         for i, wp in ipairs(waypoints) do
             local b = Instance.new("TextButton")
             b.Size = UDim2.new(1, -6, 0, 24)
-            b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+            b.BackgroundColor3 = C.row
             b.Text = ("  %d. %s"):format(i, wp.name)
-            b.TextColor3 = Color3.fromRGB(200, 210, 225)
+            b.TextColor3 = C.text
             b.Font = Enum.Font.Gotham
             b.TextSize = 10
             b.TextXAlignment = Enum.TextXAlignment.Left
@@ -1920,7 +1989,7 @@ local function buildUI()
         local out = {}
         if q == "" then return out end
         local ownChar = LP.Character
-        for _, inst in ipairs(workspace:GetDescendants()) do
+        for _, inst in ipairs(workspaceDescendants()) do
             if inst:IsA("BasePart") and inst.Name:lower():find(q, 1, true) then
                 if not (ownChar and inst:IsDescendantOf(ownChar)) then
                     table.insert(out, inst)
@@ -2054,17 +2123,17 @@ local function buildUI()
 
     local function styleWorldBtns()
         espItemsBtn.Text = itemEsp and "ESP: ON" or "ESP: OFF"
-        espItemsBtn.BackgroundColor3 = itemEsp and Color3.fromRGB(48, 110, 70) or Color3.fromRGB(34, 34, 40)
-        espItemsBtn.TextColor3 = itemEsp and Color3.fromRGB(200, 255, 210) or Color3.fromRGB(210, 210, 218)
+        espItemsBtn.BackgroundColor3 = itemEsp and C.rowOn or C.row
+        espItemsBtn.TextColor3 = itemEsp and C.accent or C.text
 
         grabBtn.Text = clickGrab and "Grab: ON" or "Grab: OFF"
-        grabBtn.BackgroundColor3 = clickGrab and Color3.fromRGB(48, 110, 70) or Color3.fromRGB(34, 34, 40)
-        grabBtn.TextColor3 = clickGrab and Color3.fromRGB(200, 255, 210) or Color3.fromRGB(210, 210, 218)
+        grabBtn.BackgroundColor3 = clickGrab and C.rowOn or C.row
+        grabBtn.TextColor3 = clickGrab and C.accent or C.text
     end
 
     local function collectPartNames()
         local counts = {}
-        for _, inst in ipairs(workspace:GetDescendants()) do
+        for _, inst in ipairs(workspaceDescendants()) do
             if inst:IsA("BasePart") then
                 counts[inst.Name] = (counts[inst.Name] or 0) + 1
             end
@@ -2092,7 +2161,7 @@ local function buildUI()
             l.Size = UDim2.new(1, -6, 0, 24)
             l.BackgroundTransparency = 1
             l.Text = "  no parts found"
-            l.TextColor3 = Color3.fromRGB(120, 120, 130)
+            l.TextColor3 = C.dim
             l.Font = Enum.Font.Gotham
             l.TextSize = 10
             l.TextXAlignment = Enum.TextXAlignment.Left
@@ -2104,9 +2173,9 @@ local function buildUI()
             local entry = list[i]
             local b = Instance.new("TextButton")
             b.Size = UDim2.new(1, -6, 0, 24)
-            b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+            b.BackgroundColor3 = C.row
             b.Text = ("  %s   x%d"):format(entry.name, entry.count)
-            b.TextColor3 = Color3.fromRGB(200, 210, 225)
+            b.TextColor3 = C.text
             b.Font = Enum.Font.Gotham
             b.TextSize = 10
             b.TextXAlignment = Enum.TextXAlignment.Left
@@ -2181,17 +2250,360 @@ local function buildUI()
 
     styleWorldBtns()
 
+    -- Kept in its own function so its locals do not eat into buildUI's
+    -- 200-variable budget.
+    local function buildPromptsAndTools()
+        -- ---------------------------------------------------------------- prompts / tools
+
+        -- Games expose "pick up", "open", "buy", "sit" as ProximityPrompts. Firing a
+        -- prompt goes through the game's own server handler, so the result is real
+        -- and other players see it. No prompt means the game uses something else.
+        sectionLabel(pageWorld, "PICKUP PROMPTS / CLICKS", 20)
+
+        local promptRow = Instance.new("Frame")
+        promptRow.Size = UDim2.new(1, -4, 0, 28)
+        promptRow.BackgroundTransparency = 1
+        promptRow.BorderSizePixel = 0
+        promptRow.LayoutOrder = 21
+        promptRow.Parent = pageWorld
+
+        local promptScanBtn = smallBtn(promptRow, "Scan prompts", 0, 0, 0.5, -2)
+        local promptNearBtn = smallBtn(promptRow, "Nearest", 0.5, 1, 0.5, -1)
+
+        local promptList = Instance.new("ScrollingFrame")
+        promptList.Size = UDim2.new(1, -4, 0, 132)
+        promptList.BackgroundColor3 = C.panel
+        promptList.BorderSizePixel = 0
+        promptList.ScrollBarThickness = 2
+        promptList.CanvasSize = UDim2.new(0, 0, 0, 0)
+        promptList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        promptList.LayoutOrder = 22
+        promptList.Parent = pageWorld
+
+        local plCorner = Instance.new("UICorner")
+        plCorner.CornerRadius = UDim.new(0, 7)
+        plCorner.Parent = promptList
+
+        local plLayout = Instance.new("UIListLayout")
+        plLayout.Padding = UDim.new(0, 2)
+        plLayout.Parent = promptList
+
+        local function placeHolder(list, text)
+            local l = Instance.new("TextLabel")
+            l.Size = UDim2.new(1, -12, 0, 22)
+            l.BackgroundTransparency = 1
+            l.Text = text
+            l.TextColor3 = C.dim
+            l.Font = Enum.Font.Gotham
+            l.TextSize = 10
+            l.TextXAlignment = Enum.TextXAlignment.Left
+            l.Parent = list
+            return l
+        end
+
+        local function clearList(list)
+            for _, ch in ipairs(list:GetChildren()) do
+                if ch:IsA("TextButton") or ch:IsA("TextLabel") then ch:Destroy() end
+            end
+        end
+
+        local function listRow(list, text, order)
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(1, -8, 0, 24)
+            b.BackgroundColor3 = C.row
+            b.Text = "  " .. text
+            b.TextColor3 = C.text
+            b.Font = Enum.Font.Gotham
+            b.TextSize = 10
+            b.TextXAlignment = Enum.TextXAlignment.Left
+            b.TextTruncate = Enum.TextTruncate.AtEnd
+            b.AutoButtonColor = false
+            b.BorderSizePixel = 0
+            b.LayoutOrder = order or 0
+            b.Parent = list
+
+            local c = Instance.new("UICorner")
+            c.CornerRadius = UDim.new(0, 5)
+            c.Parent = b
+            return b
+        end
+
+        local function distanceTo(part)
+            local _, _, hrp = getChar()
+            if not hrp or not part then return math.huge end
+            local ok, d = pcall(function() return (part.Position - hrp.Position).Magnitude end)
+            if ok and d then return d end
+            return math.huge
+        end
+
+        local function collectPrompts(limit)
+            local out = {}
+            for _, inst in ipairs(workspaceDescendants()) do
+                local isPrompt = false
+                pcall(function() isPrompt = inst:IsA("ProximityPrompt") end)
+                local isClick = false
+                pcall(function() isClick = inst:IsA("ClickDetector") end)
+
+                if (isPrompt or isClick) and inst.Parent then
+                    local enabled = true
+                    pcall(function() enabled = inst.Enabled end)
+                    if enabled ~= false then
+                        table.insert(out, inst)
+                        if #out >= (limit or 120) then break end
+                    end
+                end
+            end
+            table.sort(out, function(a, b)
+                return distanceTo(a.Parent) < distanceTo(b.Parent)
+            end)
+            return out
+        end
+
+        local function promptLabel(prompt)
+            if not prompt then return "?" end
+
+            local isClick = false
+            pcall(function() isClick = prompt:IsA("ClickDetector") end)
+            if isClick then
+                return tostring(prompt.Parent and prompt.Parent.Name or "click")
+            end
+
+            local label = prompt.ObjectText
+            if label == nil or label == "" then
+                label = prompt.ActionText or (prompt.Parent and prompt.Parent.Name) or "prompt"
+            end
+            return tostring(label)
+        end
+
+        local function firePrompt(prompt)
+            if not prompt or not prompt.Parent then
+                notify("Prompt is gone")
+                return false
+            end
+
+            local isClick = false
+            pcall(function() isClick = prompt:IsA("ClickDetector") end)
+
+            if isClick then
+                if type(fireclickdetector) ~= "function" then
+                    setStatus("this executor has no fireclickdetector")
+                    return false
+                end
+                local ok = pcall(fireclickdetector, prompt)
+                setStatus((ok and "click fired: " or "click failed: ") .. promptLabel(prompt))
+                return ok
+            end
+
+            local ok, err = pcall(function()
+                prompt:InputHoldBegin()
+                task.wait(math.min(tonumber(prompt.HoldDuration) or 0, 0.8))
+                prompt:InputHoldEnd()
+            end)
+
+            if not ok then
+                setStatus("prompt failed: " .. tostring(err))
+                return false
+            end
+
+            setStatus("prompt fired: " .. promptLabel(prompt))
+            return true
+        end
+
+        local function renderPrompts()
+            clearList(promptList)
+            local list = collectPrompts()
+
+            if #list == 0 then
+                placeHolder(promptList, "nothing found - the game may use its own remotes")
+                return 0
+            end
+
+            for i, prompt in ipairs(list) do
+                local parent = prompt.Parent
+                local name = promptLabel(prompt)
+                local action = ""
+                pcall(function() action = tostring(prompt.ActionText or "") end)
+                if action ~= "" and not name:find(action, 1, true) then
+                    name = name .. " - " .. action
+                end
+
+                local d = distanceTo(parent)
+                local text = (d < math.huge) and ("%s  (%.0f)"):format(name, d) or name
+
+                local row = listRow(promptList, text, i)
+                row.MouseButton1Click:Connect(function() firePrompt(prompt) end)
+            end
+
+            return #list
+        end
+
+        promptScanBtn.MouseButton1Click:Connect(function()
+            local n = renderPrompts()
+            setStatus(("world: %d prompts"):format(n))
+        end)
+
+        promptNearBtn.MouseButton1Click:Connect(function()
+            local list = collectPrompts(20)
+            if #list == 0 then
+                notify("No prompt in this map")
+                return
+            end
+            firePrompt(list[1])
+        end)
+
+        placeHolder(promptList, "press Scan prompts")
+
+        sectionLabel(pageWorld, "TOOLS IN MAP", 23)
+
+        local toolRow = Instance.new("Frame")
+        toolRow.Size = UDim2.new(1, -4, 0, 28)
+        toolRow.BackgroundTransparency = 1
+        toolRow.BorderSizePixel = 0
+        toolRow.LayoutOrder = 24
+        toolRow.Parent = pageWorld
+
+        local toolScanBtn = smallBtn(toolRow, "Scan tools", 0, 0, 0.5, -2)
+        local toolNearBtn = smallBtn(toolRow, "TP to nearest", 0.5, 1, 0.5, -1)
+
+        local toolList = Instance.new("ScrollingFrame")
+        toolList.Size = UDim2.new(1, -4, 0, 108)
+        toolList.BackgroundColor3 = C.panel
+        toolList.BorderSizePixel = 0
+        toolList.ScrollBarThickness = 2
+        toolList.CanvasSize = UDim2.new(0, 0, 0, 0)
+        toolList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        toolList.LayoutOrder = 25
+        toolList.Parent = pageWorld
+
+        local tlCorner = Instance.new("UICorner")
+        tlCorner.CornerRadius = UDim.new(0, 7)
+        tlCorner.Parent = toolList
+
+        local tlLayout = Instance.new("UIListLayout")
+        tlLayout.Padding = UDim.new(0, 2)
+        tlLayout.Parent = toolList
+
+        local function collectTools(limit)
+            local out = {}
+            for _, inst in ipairs(workspaceDescendants()) do
+                if inst:IsA("Tool") then
+                    table.insert(out, inst)
+                    if #out >= (limit or 80) then break end
+                end
+            end
+            table.sort(out, function(a, b)
+                return distanceTo(a.Parent) < distanceTo(b.Parent)
+            end)
+            return out
+        end
+
+        -- A Tool is not a Model, so it has no Position/GetPivot of its own.
+        -- Resolve the part that actually sits in the world.
+        local function toolPart(tool)
+            local h = nil
+            pcall(function() h = tool.Handle end)
+            if h and h.Parent then return h end
+            local found = nil
+            pcall(function()
+                for _, d in ipairs(tool:GetDescendants()) do
+                    if d:IsA("BasePart") then found = d break end
+                end
+            end)
+            return found
+        end
+
+        local function toolPosition(tool)
+            local part = toolPart(tool)
+            if part then return part.Position end
+            local parent = tool.Parent
+            if parent then
+                local p = nil
+                pcall(function() p = parent.Position end)
+                if p then return p end
+            end
+            return nil
+        end
+
+        local function distanceToTool(tool)
+            local _, _, hrp = getChar()
+            local pos = toolPosition(tool)
+            if not hrp or not pos then return math.huge end
+            return (pos - hrp.Position).Magnitude
+        end
+
+        local function tpToTool(tool)
+            local _, _, hrp = getChar()
+            if not hrp then
+                notify("Character not loaded")
+                return
+            end
+
+            local pos = toolPosition(tool)
+            if not pos then
+                notify("Tool is gone")
+                return
+            end
+
+            local ok = pcall(function()
+                hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+            end)
+
+            if ok then
+                setStatus("tp to tool " .. tostring(tool.Name))
+            else
+                setStatus("could not reach " .. tostring(tool.Name))
+            end
+        end
+
+        local function renderTools()
+            clearList(toolList)
+            local list = collectTools()
+
+            if #list == 0 then
+                placeHolder(toolList, "no Tool in workspace right now")
+                return 0
+            end
+
+            for i, tool in ipairs(list) do
+                local d = distanceToTool(tool)
+                local text = (d < math.huge) and ("%s  (%.0f)"):format(tool.Name, d) or tool.Name
+                local row = listRow(toolList, text, i)
+                row.MouseButton1Click:Connect(function() tpToTool(tool) end)
+            end
+
+            return #list
+        end
+
+        toolScanBtn.MouseButton1Click:Connect(function()
+            local n = renderTools()
+            setStatus(("world: %d tools"):format(n))
+        end)
+
+        toolNearBtn.MouseButton1Click:Connect(function()
+            local list = collectTools(1)
+            if #list == 0 then
+                notify("No tool in this map")
+                return
+            end
+            tpToTool(list[1])
+        end)
+
+        placeHolder(toolList, "press Scan tools")
+    end
+
+    buildPromptsAndTools()
+
     -- ---------------------------------------------------------------- avatar tab
 
     sectionLabel(pageAvatar, "COPY OUTFIT", 1)
 
     local copyBox = Instance.new("TextBox")
     copyBox.Size = UDim2.new(1, -4, 0, 28)
-    copyBox.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    copyBox.BackgroundColor3 = C.row
     copyBox.PlaceholderText = "name / UserId (empty = Player tab target)"
     copyBox.Text = ""
-    copyBox.TextColor3 = Color3.fromRGB(220, 220, 226)
-    copyBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+    copyBox.TextColor3 = C.text
+    copyBox.PlaceholderColor3 = C.dim
     copyBox.Font = Enum.Font.Gotham
     copyBox.TextSize = 12
     copyBox.BorderSizePixel = 0
@@ -2269,11 +2681,11 @@ local function buildUI()
 
     local searchBox = Instance.new("TextBox")
     searchBox.Size = UDim2.new(1, -4, 0, 28)
-    searchBox.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    searchBox.BackgroundColor3 = C.row
     searchBox.PlaceholderText = "search emote / lagu..."
     searchBox.Text = ""
-    searchBox.TextColor3 = Color3.fromRGB(220, 220, 226)
-    searchBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+    searchBox.TextColor3 = C.text
+    searchBox.PlaceholderColor3 = C.dim
     searchBox.Font = Enum.Font.Gotham
     searchBox.TextSize = 12
     searchBox.BorderSizePixel = 0
@@ -2287,7 +2699,7 @@ local function buildUI()
 
     local results = Instance.new("ScrollingFrame")
     results.Size = UDim2.new(1, -4, 0, 240)
-    results.BackgroundColor3 = Color3.fromRGB(26, 26, 31)
+    results.BackgroundColor3 = C.panel
     results.BorderSizePixel = 0
     results.ScrollBarThickness = 3
     results.CanvasSize = UDim2.new(0, 0, 0, 0)
@@ -2315,7 +2727,7 @@ local function buildUI()
             if catOk and nameOk then
                 local b = Instance.new("TextButton")
                 b.Size = UDim2.new(1, -6, 0, 26)
-                b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+                b.BackgroundColor3 = C.row
                 b.Text = "  " .. e.name
                 b.TextColor3 = Color3.fromRGB(205, 205, 215)
                 b.Font = Enum.Font.Gotham
@@ -2352,8 +2764,8 @@ local function buildUI()
     local function styleCats()
         for key, b in pairs(catButtons) do
             local on = (key == emoteCat)
-            b.BackgroundColor3 = on and Color3.fromRGB(48, 110, 70) or Color3.fromRGB(34, 34, 40)
-            b.TextColor3 = on and Color3.fromRGB(200, 255, 210) or Color3.fromRGB(190, 190, 200)
+            b.BackgroundColor3 = on and C.rowOn or C.row
+            b.TextColor3 = on and C.accent or C.muted
         end
     end
 
@@ -2379,11 +2791,11 @@ local function buildUI()
 
     local animIdBox = Instance.new("TextBox")
     animIdBox.Size = UDim2.new(1, -4, 0, 28)
-    animIdBox.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    animIdBox.BackgroundColor3 = C.row
     animIdBox.PlaceholderText = "animation id, e.g. 507771019"
     animIdBox.Text = ""
-    animIdBox.TextColor3 = Color3.fromRGB(220, 220, 226)
-    animIdBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+    animIdBox.TextColor3 = C.text
+    animIdBox.PlaceholderColor3 = C.dim
     animIdBox.Font = Enum.Font.Code
     animIdBox.TextSize = 11
     animIdBox.BorderSizePixel = 0
@@ -2421,11 +2833,11 @@ local function buildUI()
 
     local remoteFilter = Instance.new("TextBox")
     remoteFilter.Size = UDim2.new(1, -4, 0, 28)
-    remoteFilter.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    remoteFilter.BackgroundColor3 = C.row
     remoteFilter.PlaceholderText = "filter by name or path..."
     remoteFilter.Text = ""
-    remoteFilter.TextColor3 = Color3.fromRGB(220, 220, 226)
-    remoteFilter.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+    remoteFilter.TextColor3 = C.text
+    remoteFilter.PlaceholderColor3 = C.dim
     remoteFilter.Font = Enum.Font.Gotham
     remoteFilter.TextSize = 12
     remoteFilter.BorderSizePixel = 0
@@ -2443,7 +2855,7 @@ local function buildUI()
 
     local remoteList = Instance.new("ScrollingFrame")
     remoteList.Size = UDim2.new(1, -4, 0, 150)
-    remoteList.BackgroundColor3 = Color3.fromRGB(26, 26, 31)
+    remoteList.BackgroundColor3 = C.panel
     remoteList.BorderSizePixel = 0
     remoteList.ScrollBarThickness = 3
     remoteList.CanvasSize = UDim2.new(0, 0, 0, 0)
@@ -2469,12 +2881,12 @@ local function buildUI()
     spyRow.Parent = pageRemotes
 
     local spyBtn = smallBtn(spyRow, "Spy: OFF", 0, 0, 0.62, -2)
-    spyBtn.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    spyBtn.BackgroundColor3 = C.row
     local clearSpyBtn = smallBtn(spyRow, "Clear", 0.62, 1, 0.38, -1)
 
     local spyLogFrame = Instance.new("ScrollingFrame")
     spyLogFrame.Size = UDim2.new(1, -4, 0, 110)
-    spyLogFrame.BackgroundColor3 = Color3.fromRGB(26, 26, 31)
+    spyLogFrame.BackgroundColor3 = C.panel
     spyLogFrame.BorderSizePixel = 0
     spyLogFrame.ScrollBarThickness = 3
     spyLogFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
@@ -2566,7 +2978,7 @@ local function buildUI()
     local function addRemoteRow(text, color, onClick)
         local b = Instance.new("TextButton")
         b.Size = UDim2.new(1, -6, 0, 24)
-        b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+        b.BackgroundColor3 = C.row
         b.Text = "  " .. text
         b.TextColor3 = color
         b.Font = Enum.Font.Gotham
@@ -2612,7 +3024,7 @@ local function buildUI()
                 total += 1
                 if shown < 250 then
                     shown += 1
-                    addRemoteRow(path, Color3.fromRGB(200, 210, 225), function()
+                    addRemoteRow(path, C.text, function()
                         selectedRemote = inst
                         if selectedLabel then
                             selectedLabel.Text = "selected: " .. inst.Name
@@ -2655,11 +3067,11 @@ local function buildUI()
 
     local argsBox = Instance.new("TextBox")
     argsBox.Size = UDim2.new(1, -4, 0, 28)
-    argsBox.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+    argsBox.BackgroundColor3 = C.row
     argsBox.PlaceholderText = 'args: "text", 5, true'
     argsBox.Text = ""
-    argsBox.TextColor3 = Color3.fromRGB(220, 220, 226)
-    argsBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+    argsBox.TextColor3 = C.text
+    argsBox.PlaceholderColor3 = C.dim
     argsBox.Font = Enum.Font.Code
     argsBox.TextSize = 11
     argsBox.BorderSizePixel = 0
@@ -2761,7 +3173,7 @@ local function buildUI()
             l.Size = UDim2.new(1, -6, 0, 24)
             l.BackgroundTransparency = 1
             l.Text = "  nothing recorded yet"
-            l.TextColor3 = Color3.fromRGB(120, 120, 130)
+            l.TextColor3 = C.dim
             l.Font = Enum.Font.Gotham
             l.TextSize = 10
             l.TextXAlignment = Enum.TextXAlignment.Left
@@ -2935,12 +3347,12 @@ local function buildUI()
     local function styleSpyBtn()
         if spyEnabled then
             spyBtn.Text = "Spy: ON"
-            spyBtn.BackgroundColor3 = Color3.fromRGB(48, 110, 70)
-            spyBtn.TextColor3 = Color3.fromRGB(200, 255, 210)
+            spyBtn.BackgroundColor3 = C.rowOn
+            spyBtn.TextColor3 = C.accent
         else
             spyBtn.Text = "Spy: OFF"
-            spyBtn.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
-            spyBtn.TextColor3 = Color3.fromRGB(210, 210, 218)
+            spyBtn.BackgroundColor3 = C.row
+            spyBtn.TextColor3 = C.text
         end
     end
 
@@ -3007,9 +3419,9 @@ local function buildUI()
     local reopen = Instance.new("TextButton")
     reopen.Size = UDim2.fromOffset(44, 44)
     reopen.Position = UDim2.new(0, 8, 0, 160)
-    reopen.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+    reopen.BackgroundColor3 = C.panel
     reopen.Text = "="
-    reopen.TextColor3 = Color3.fromRGB(230, 230, 235)
+    reopen.TextColor3 = C.text
     reopen.TextSize = 20
     reopen.Font = Enum.Font.GothamBold
     reopen.BorderSizePixel = 0
