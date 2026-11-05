@@ -45,6 +45,7 @@ local state = {
     freecam    = false,
     fullbright = false,
     autoClick  = false,
+    speedLock  = false,
     uiOpen     = true,
 }
 
@@ -192,10 +193,26 @@ local function flyOn()
     flyBG.Parent = hrp
 
     flyConn = RunService.RenderStepped:Connect(function()
-        local _, _, root = getChar()
+        local _, hum2, root = getChar()
         if not root then return end
         local cam = workspace.CurrentCamera
         if not cam then return end
+
+        -- Some games delete foreign constraints every frame; put them back.
+        if not flyBV or flyBV.Parent ~= root then
+            flyBV = Instance.new("BodyVelocity")
+            flyBV.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+            flyBV.Parent = root
+        end
+        if not flyBG or flyBG.Parent ~= root then
+            flyBG = Instance.new("BodyGyro")
+            flyBG.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+            flyBG.P = 1e4
+            flyBG.Parent = root
+        end
+        if hum2 and not hum2.PlatformStand then
+            hum2.PlatformStand = true
+        end
 
         local dir = Vector3.zero
         if UIS:IsKeyDown(Enum.KeyCode.W) then dir += cam.CFrame.LookVector end
@@ -257,6 +274,55 @@ local function noclipReport()
 
     return ("noclip: %d parts, collide=%d, owner=%s, anchored=%s, constraints=%d")
         :format(total, colliding, owner, tostring(hrp.Anchored), constraints)
+end
+
+-- Who simulates your character, and whether the game opted into Server Authority.
+-- Movement only reaches other players when you own the character and the game
+-- still accepts client physics.
+local function netReport()
+    local _, _, hrp = getChar()
+    if not hrp then return "no character" end
+
+    local owner = "unknown"
+    pcall(function()
+        local o = hrp:GetNetworkOwner()
+        owner = o and o.Name or "server"
+    end)
+
+    local authority = "n/a"
+    local okA, mode = pcall(function() return workspace.AuthorityMode end)
+    if okA and mode ~= nil then
+        local name = "?"
+        pcall(function() name = mode.Name end)
+        if tostring(name):lower():find("enabled") then
+            authority = "ON"
+        else
+            authority = "off"
+        end
+    end
+
+    return ("owner=%s  authority=%s"):format(owner, authority)
+end
+
+-- Nudges the character up and checks whether the server kept it. If the move
+-- sticks, other players see your movement too; if it snaps back, the server
+-- owns the character and no client movement feature can work.
+local function testMovementReplication()
+    local _, _, hrp = getChar()
+    if not hrp then return "test: no character" end
+
+    local startY = hrp.Position.Y
+    hrp.CFrame = hrp.CFrame + Vector3.new(0, 6, 0)
+    task.wait(0.3)
+
+    local _, _, after = getChar()
+    if not after then return "test: character lost" end
+
+    local lift = after.Position.Y - startY
+    if lift > 2 then
+        return ("test: server accepted movement (+%.1f studs) - others see it"):format(lift)
+    end
+    return ("test: server rejected movement (%.1f studs) - client physics blocked"):format(lift)
 end
 
 -- last resort for games that re-enable CanCollide every frame
@@ -330,18 +396,19 @@ local function noclipOn()
 end
 
 -- ---------------------------------------------------------------- invisible
--- Client-side only: hides your character on your screen, not for other players.
+-- Roblox only replicates physics state (CFrame/velocity) and animations from a
+-- client. Property writes such as Transparency never leave your machine, so
+-- there is no client-side way to hide from other players. This hides you on
+-- your own screen only.
 
 local invisConn
-local invisSaved = {}
 
 local function invisibleSweep()
     local c = LP.Character
     if not c then return end
     for _, p in ipairs(c:GetDescendants()) do
         if p:IsA("BasePart") then
-            p.Transparency = 1              -- replicated: others may see it
-            p.LocalTransparencyModifier = 1 -- guaranteed on your screen
+            p.LocalTransparencyModifier = 1
         end
     end
 end
@@ -349,25 +416,20 @@ end
 local function invisibleOff()
     state.invisible = false
     if invisConn then invisConn:Disconnect(); invisConn = nil end
-    for part, t in pairs(invisSaved) do
-        if part and part.Parent then
-            pcall(function() part.Transparency = t end)
-            pcall(function() part.LocalTransparencyModifier = 0 end)
+    local c = LP.Character
+    if c then
+        for _, p in ipairs(c:GetDescendants()) do
+            if p:IsA("BasePart") then
+                pcall(function() p.LocalTransparencyModifier = 0 end)
+            end
         end
     end
-    invisSaved = {}
 end
 
 local function invisibleOn()
     local c = LP.Character
     if not c then return false end
     state.invisible = true
-    invisSaved = {}
-    for _, p in ipairs(c:GetDescendants()) do
-        if p:IsA("BasePart") then
-            invisSaved[p] = p.Transparency
-        end
-    end
     if invisConn then invisConn:Disconnect() end
     invisConn = RunService.Stepped:Connect(invisibleSweep)
     invisibleSweep()
@@ -619,6 +681,29 @@ local function autoClickOff()
     state.autoClick = false
 end
 
+-- Many games rewrite Humanoid.WalkSpeed every frame. This keeps your value.
+local speedLockThread
+
+local function speedLockOn()
+    state.speedLock = true
+    if speedLockThread then return true end
+    speedLockThread = task.spawn(function()
+        while state.speedLock do
+            local _, hum = getChar()
+            if hum and hum.WalkSpeed ~= walkSpeedValue then
+                hum.WalkSpeed = walkSpeedValue
+            end
+            task.wait(0.25)
+        end
+        speedLockThread = nil
+    end)
+    return true
+end
+
+local function speedLockOff()
+    state.speedLock = false
+end
+
 -- ---------------------------------------------------------------- feature dispatch
 
 local function setFeature(key, on)
@@ -635,7 +720,13 @@ local function setFeature(key, on)
         espOff()
         return true
     elseif key == "invisible" then
-        if on then return invisibleOn() end
+        if on then
+            local ok = invisibleOn()
+            if ok then
+                setStatus("invisible: your screen only - others still see you")
+            end
+            return ok
+        end
         invisibleOff()
         return true
     elseif key == "freecam" then
@@ -649,6 +740,10 @@ local function setFeature(key, on)
     elseif key == "autoClick" then
         if on then return autoClickOn() end
         autoClickOff()
+        return true
+    elseif key == "speedLock" then
+        if on then return speedLockOn() end
+        speedLockOff()
         return true
     elseif key == "infJump" then
         state.infJump = on
@@ -1270,10 +1365,11 @@ local featureList = {
     { key = "fly",        label = "Fly  (WASD / Space / Ctrl)" },
     { key = "noclip",     label = "Noclip" },
     { key = "esp",        label = "Player ESP" },
-    { key = "invisible",  label = "Invisible (client-side)" },
+    { key = "invisible",  label = "Invisible (you only)" },
     { key = "freecam",    label = "Freecam  (WASD / Q E / Space)" },
     { key = "fullbright", label = "Fullbright + no fog" },
     { key = "autoClick",  label = "Auto click" },
+    { key = "speedLock",  label = "Lock walk speed" },
     { key = "infJump",    label = "Infinite Jump" },
     { key = "clickTP",    label = "Click Teleport" },
 }
@@ -1323,6 +1419,65 @@ end)
 
 makeSlider(pageMain, 53, "Click delay (ms)", 20, 500, 100, 10, function(v)
     clickInterval = v / 1000
+end)
+
+sectionLabel(pageMain, "NETWORK", 60)
+
+local netLabel = Instance.new("TextLabel")
+netLabel.Size = UDim2.new(1, -4, 0, 18)
+netLabel.BackgroundTransparency = 1
+netLabel.Text = "  checking..."
+netLabel.TextColor3 = Color3.fromRGB(150, 200, 175)
+netLabel.Font = Enum.Font.Code
+netLabel.TextSize = 10
+netLabel.TextXAlignment = Enum.TextXAlignment.Left
+netLabel.TextTruncate = Enum.TextTruncate.AtEnd
+netLabel.LayoutOrder = 61
+netLabel.Parent = pageMain
+
+local netHint = Instance.new("TextLabel")
+netHint.Size = UDim2.new(1, -4, 0, 56)
+netHint.BackgroundColor3 = Color3.fromRGB(28, 28, 33)
+netHint.BorderSizePixel = 0
+netHint.Text = "  What others can see:\n  movement (fly, speed, tp, noclip) and animations.\n  Appearance (invisible, size, outfit) stays on\n  your screen only."
+netHint.TextColor3 = Color3.fromRGB(150, 150, 162)
+netHint.Font = Enum.Font.Gotham
+netHint.TextSize = 10
+netHint.TextXAlignment = Enum.TextXAlignment.Left
+netHint.TextYAlignment = Enum.TextYAlignment.Top
+netHint.TextWrapped = true
+netHint.LayoutOrder = 62
+netHint.Parent = pageMain
+
+local nhCorner = Instance.new("UICorner")
+nhCorner.CornerRadius = UDim.new(0, 6)
+nhCorner.Parent = netHint
+
+local testNetBtn = flatButton(pageMain, "Test movement replication", 63, 28)
+testNetBtn.TextXAlignment = Enum.TextXAlignment.Center
+
+testNetBtn.MouseButton1Click:Connect(function()
+    setStatus("testing movement...")
+    task.spawn(function()
+        local result = testMovementReplication()
+        netLabel.Text = "  " .. result
+        setStatus(result)
+    end)
+end)
+
+local function refreshNetLabel()
+    netLabel.Text = "  " .. netReport()
+end
+
+refreshNetLabel()
+
+task.spawn(function()
+    while true do
+        task.wait(2)
+        if main.Visible and activeTab == "main" then
+            refreshNetLabel()
+        end
+    end
 end)
 
 -- ---------------------------------------------------------------- player tab
@@ -2183,6 +2338,43 @@ local stopBtn = flatButton(pageEmote, "Stop emote", 5, 28)
 stopBtn.BackgroundColor3 = Color3.fromRGB(74, 44, 44)
 stopBtn.TextXAlignment = Enum.TextXAlignment.Center
 stopBtn.MouseButton1Click:Connect(stopEmote)
+
+sectionLabel(pageEmote, "CUSTOM ANIMATION ID", 6)
+
+local animIdBox = Instance.new("TextBox")
+animIdBox.Size = UDim2.new(1, -4, 0, 28)
+animIdBox.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+animIdBox.PlaceholderText = "animation id, e.g. 507771019"
+animIdBox.Text = ""
+animIdBox.TextColor3 = Color3.fromRGB(220, 220, 226)
+animIdBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+animIdBox.Font = Enum.Font.Code
+animIdBox.TextSize = 11
+animIdBox.BorderSizePixel = 0
+animIdBox.ClearTextOnFocus = false
+animIdBox.LayoutOrder = 7
+animIdBox.Parent = pageEmote
+
+local aiCorner = Instance.new("UICorner")
+aiCorner.CornerRadius = UDim.new(0, 6)
+aiCorner.Parent = animIdBox
+
+local playIdBtn = flatButton(pageEmote, "Play animation", 8, 28)
+playIdBtn.TextXAlignment = Enum.TextXAlignment.Center
+
+playIdBtn.MouseButton1Click:Connect(function()
+    local raw = tostring(animIdBox.Text or ""):gsub("[^%d]", "")
+    if raw == "" then
+        notify("Enter an animation id")
+        return
+    end
+    local ok, err = playEmote(raw)
+    if ok then
+        setStatus("animation " .. raw .. " playing - others see this")
+    else
+        notify("Animation: " .. tostring(err))
+    end
+end)
 
 styleCats()
 renderEmotes()
