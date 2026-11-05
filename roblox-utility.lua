@@ -442,6 +442,27 @@ local EMOTES = {
     { name = "Cheer",  id = 507770677 },
 }
 
+-- Curated from the community emote tables (Eazvy hub / DevForum lists).
+-- Some are UGC emotes: if the asset is private in your region the button
+-- reports "load blocked" instead of playing.
+local VIRAL = {
+    { name = "Sturdy",    id = 17746180844 },
+    { name = "Apple",     id = 18946844622 },
+    { name = "HOT TO GO", id = 85267023718407 },
+    { name = "Floss",     id = 5917459365 },
+    { name = "Hype",      id = 3695333486 },
+    { name = "Old Town",  id = 5937560570 },
+    { name = "Rasputin",  id = 114872820353992 },
+    { name = "Squid",     id = 97611664803614 },
+    { name = "M3GAN",     id = 99649534578309 },
+    { name = "SpongeBob", id = 18443245017 },
+    { name = "Skibidi",   id = 134283166482394 },
+    { name = "KATSEYE",   id = 135876612109535 },
+    { name = "Zabb",      id = 129470135909814 },
+    { name = "Shrek",     id = 18524313628 },
+    { name = "Vroom",     id = 18526397037 },
+}
+
 local emoteTrack
 local function playEmote(id)
     local _, hum = getChar()
@@ -814,46 +835,56 @@ resetBtn.MouseButton1Click:Connect(function()
     resetBtn.Text = "1x"
 end)
 
-sectionLabel("EMOTES", 104)
+local function addEmoteGrid(order, items)
+    local rows = math.ceil(#items / 3)
+    local height = rows * 28 + (rows - 1) * 4
 
-local emoteFrame = Instance.new("Frame")
-emoteFrame.Size = UDim2.new(1, -4, 0, 60)
-emoteFrame.BackgroundTransparency = 1
-emoteFrame.BorderSizePixel = 0
-emoteFrame.LayoutOrder = 105
-emoteFrame.Parent = list
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, -4, 0, height)
+    frame.BackgroundTransparency = 1
+    frame.BorderSizePixel = 0
+    frame.LayoutOrder = order
+    frame.Parent = list
 
-local grid = Instance.new("UIGridLayout")
-grid.CellSize = UDim2.new(1 / 3, -4, 0, 28)
-grid.CellPadding = UDim2.new(0, 4, 0, 4)
-grid.SortOrder = Enum.SortOrder.LayoutOrder
-grid.Parent = emoteFrame
+    local grid = Instance.new("UIGridLayout")
+    grid.CellSize = UDim2.new(1 / 3, -4, 0, 28)
+    grid.CellPadding = UDim2.new(0, 4, 0, 4)
+    grid.SortOrder = Enum.SortOrder.LayoutOrder
+    grid.Parent = frame
 
-for i, e in ipairs(EMOTES) do
-    local b = Instance.new("TextButton")
-    b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
-    b.Text = e.name
-    b.TextColor3 = Color3.fromRGB(210, 210, 218)
-    b.Font = Enum.Font.Gotham
-    b.TextSize = 11
-    b.BorderSizePixel = 0
-    b.AutoButtonColor = false
-    b.LayoutOrder = i
-    b.Parent = emoteFrame
+    for i, e in ipairs(items) do
+        local b = Instance.new("TextButton")
+        b.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+        b.Text = e.name
+        b.TextColor3 = Color3.fromRGB(210, 210, 218)
+        b.Font = Enum.Font.Gotham
+        b.TextSize = 10
+        b.TextTruncate = Enum.TextTruncate.AtEnd
+        b.BorderSizePixel = 0
+        b.AutoButtonColor = false
+        b.LayoutOrder = i
+        b.Parent = frame
 
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, 6)
-    c.Parent = b
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, 6)
+        c.Parent = b
 
-    b.MouseButton1Click:Connect(function()
-        local ok, err = playEmote(e.id)
-        if ok then
-            setStatus("emote: " .. e.name)
-        else
-            notify("Emote: " .. tostring(err))
-        end
-    end)
+        b.MouseButton1Click:Connect(function()
+            local ok, err = playEmote(e.id)
+            if ok then
+                setStatus("emote: " .. e.name)
+            else
+                notify("Emote " .. e.name .. ": " .. tostring(err))
+            end
+        end)
+    end
 end
+
+sectionLabel("EMOTES", 104)
+addEmoteGrid(105, EMOTES)
+
+sectionLabel("VIRAL / NEW", 106)
+addEmoteGrid(107, VIRAL)
 
 -- drag
 local dragging, dragStart, startPos
