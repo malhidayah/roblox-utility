@@ -1075,6 +1075,23 @@ mainStroke.Color = Color3.fromRGB(60, 60, 70)
 mainStroke.Thickness = 1
 mainStroke.Parent = main
 
+-- Phones report a small viewport, so a fixed 300x500 box can start with its
+-- header off-screen. Fit the window to the viewport before showing it.
+local function fitMain()
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+    local vp = cam.ViewportSize
+    if vp.X < 1 or vp.Y < 1 then return end
+
+    local w = math.min(300, math.max(200, vp.X - 12))
+    local h = math.min(500, math.max(260, vp.Y - 12))
+    main.Size = UDim2.fromOffset(w, h)
+
+    local x = math.clamp(24, 0, math.max(0, vp.X - w))
+    local y = math.max(0, (vp.Y - h) / 2)
+    main.Position = UDim2.fromOffset(x, y)
+end
+
 local header = Instance.new("Frame")
 header.Size = UDim2.new(1, 0, 0, 36)
 header.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
@@ -2985,8 +3002,8 @@ UIS.InputEnded:Connect(function(input)
 end)
 
 local reopen = Instance.new("TextButton")
-reopen.Size = UDim2.fromOffset(40, 40)
-reopen.Position = UDim2.new(0, 24, 0.5, 200)
+reopen.Size = UDim2.fromOffset(44, 44)
+reopen.Position = UDim2.new(0, 8, 0, 160)
 reopen.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
 reopen.Text = "="
 reopen.TextColor3 = Color3.fromRGB(230, 230, 235)
@@ -3018,6 +3035,22 @@ end)
 
 selectTab("main")
 refreshRows()
+fitMain()
+
+do
+    local cam = workspace.CurrentCamera
+    if cam then
+        cam:GetPropertyChangedSignal("ViewportSize"):Connect(fitMain)
+    end
+    workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+        local c = workspace.CurrentCamera
+        if c then
+            c:GetPropertyChangedSignal("ViewportSize"):Connect(fitMain)
+            fitMain()
+        end
+    end)
+end
+
 notify("Loaded - RightShift to toggle")
 
 genv.Util = {
